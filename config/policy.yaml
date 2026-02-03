@@ -1,0 +1,9 @@
+blocked_commands:
+  - "rm -rf"
+  - "wget"
+  - "| bash"
+
+sensitive_files:
+  - ".ssh"
+  - ".env"
+  - "/etc/passwd"
