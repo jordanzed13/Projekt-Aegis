@@ -1,9 +1,20 @@
-blocked_commands:
-  - "rm -rf"
-  - "wget"
-  - "| bash"
+security_policy:
+  sensitive_patterns:
+    files:
+      - ".ssh/"
+      - ".aws/"
+      - ".env"
+      - "/etc/passwd"
+      - "passwords.txt"
+    commands:
+      - "rm -rf"
+      - "wget"
+      - "| bash"
 
-sensitive_files:
-  - ".ssh"
-  - ".env"
-  - "/etc/passwd"
+  suspicious_thresholds:
+    max_requests_per_minute: 5
+    max_dir_listings: 3
+
+  allowed_domains:
+    - "google.com"
+    - "github.com"
