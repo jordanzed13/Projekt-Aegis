@@ -1,0 +1,31 @@
+node_modules/
+**/node_modules/
+
+# Build outputs
+dist/
+**/dist/
+out/
+**/out/
+apps/aegis-desktop/dist/
+apps/aegis-controller/dist/
+packages/aegis-core/dist/
+openclaw/dist/
+openclaw/ui/dist/
+
+# Packaged apps / installers
+apps/aegis-desktop/dist/win-unpacked*/
+apps/aegis-desktop/dist/win-unpacked-*/
+*.exe
+*.msi
+*.dmg
+*.zip
+*.tgz
+
+# Runtime assets / caches
+resources/
+.pnpm-store/
+.cache/
+.eslintcache
+
+# Logs
+*.log

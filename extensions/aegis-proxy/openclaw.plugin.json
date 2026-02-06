@@ -1,0 +1,19 @@
+{
+  "id": "aegis-proxy",
+  "name": "Aegis Proxy",
+  "description": "Routes tool calls through Projekt Aegis policy engine.",
+  "skills": ["skills/aegis-proxy"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "controllerUrl": { "type": "string" },
+      "timeoutMs": { "type": "number" }
+    },
+    "required": ["controllerUrl"]
+  },
+  "uiHints": {
+    "controllerUrl": { "label": "Aegis Controller URL" },
+    "timeoutMs": { "label": "Proxy Timeout (ms)" }
+  }
+}

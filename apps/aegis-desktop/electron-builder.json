@@ -1,0 +1,68 @@
+{
+  "appId": "ai.projekt.aegis",
+  "productName": "Projekt Aegis",
+  "asar": true,
+  "compression": "store",
+  "directories": {
+    "buildResources": "build"
+  },
+  "files": [
+    "dist/main/**",
+    "dist/preload/**",
+    "dist/renderer/**"
+  ],
+  "extraResources": [
+    {
+      "from": "../../resources/node/node-v22.13.1-win-x64",
+      "to": "node"
+    },
+    {
+      "from": "../../openclaw",
+      "to": "openclaw",
+      "filter": [
+        "openclaw.mjs",
+        "dist/**",
+        "assets/**",
+        "docs/reference/templates/**",
+        "extensions/**",
+        "skills/**",
+        "node_modules/**",
+        "!node_modules/.cache/ms-playwright/**",
+        "!node_modules/playwright/.local-browsers/**",
+        "!node_modules/playwright-core/.local-browsers/**",
+        "README.md",
+        "LICENSE"
+      ]
+    },
+    {
+      "from": "../../extensions/aegis-proxy",
+      "to": "extensions/aegis-proxy"
+    },
+    {
+      "from": "../../apps/aegis-controller/dist",
+      "to": "controller"
+    },
+    {
+      "from": "../../apps/aegis-controller/node_modules/ws",
+      "to": "controller/node_modules/ws"
+    },
+    {
+      "from": "../../packages/aegis-core/dist",
+      "to": "controller/node_modules/@aegis/core/dist"
+    },
+    {
+      "from": "../../packages/aegis-core/package.json",
+      "to": "controller/node_modules/@aegis/core/package.json"
+    },
+    {
+      "from": "../../node_modules/.pnpm/node_modules/zod",
+      "to": "controller/node_modules/zod"
+    }
+  ],
+  "nsis": {
+    "oneClick": true,
+    "perMachine": false,
+    "allowElevation": true,
+    "allowToChangeInstallationDirectory": false
+  }
+}
