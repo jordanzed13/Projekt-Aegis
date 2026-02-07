@@ -10,8 +10,8 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "pack": "electron-builder --dir",
-    "dist": "electron-builder"
+    "pack": "node ../../scripts/materialize-openclaw-node-modules.mjs && electron-builder --dir",
+    "dist": "node ../../scripts/materialize-openclaw-node-modules.mjs && electron-builder"
   },
   "dependencies": {
     "react": "^18.2.0",

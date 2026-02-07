@@ -81,6 +81,7 @@ The app will spawn OpenClaw locally and the Aegis controller on first start.
 - Policy file supports JSON (`.json`) or YAML (`.yml`/`.yaml`).
 - Channel plugins are auto-enabled so the OpenClaw dashboard can render channel configuration schemas.
 - Core filesystem/runtime tools (`exec`, `read`, `write`, `edit`, `list_dir`) execute locally inside the Aegis controller; other tools are proxied to OpenClaw.
+- Portable/installer builds materialize OpenClaw `node_modules` so dependencies resolve on machines without pnpm installed.
 
 ## Build (Production)
 

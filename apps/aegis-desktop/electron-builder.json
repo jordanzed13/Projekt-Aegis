@@ -26,15 +26,16 @@
         "docs/reference/templates/**",
         "extensions/**",
         "skills/**",
-        "node_modules/.pnpm/**",
-        "node_modules/.bin/**",
-        "node_modules/**",
         "!node_modules/.cache/ms-playwright/**",
         "!node_modules/playwright/.local-browsers/**",
         "!node_modules/playwright-core/.local-browsers/**",
         "README.md",
         "LICENSE"
       ]
+    },
+    {
+      "from": "../../openclaw/node_modules_materialized",
+      "to": "openclaw/node_modules"
     },
     {
       "from": "../../extensions/aegis-proxy",
