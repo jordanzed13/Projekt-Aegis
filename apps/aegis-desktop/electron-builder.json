@@ -26,6 +26,8 @@
         "docs/reference/templates/**",
         "extensions/**",
         "skills/**",
+        "node_modules/.pnpm/**",
+        "node_modules/.bin/**",
         "node_modules/**",
         "!node_modules/.cache/ms-playwright/**",
         "!node_modules/playwright/.local-browsers/**",

@@ -39,3 +39,4 @@
 - Aegis proxy now aliases common shell calls (`ls`, `dir`, `pwd`, `whoami`) to safe local handlers.
 - Global tools profile forced to `full` so the Aegis exec agent can invoke all core tools.
 - Added local tool execution inside the Aegis controller for `exec`, `read`, `write`, `edit`, `list_dir`, `pwd`, and `whoami` so core filesystem/runtime tools no longer rely on OpenClaw `tools.invoke`.
+- Included OpenClaw pnpm `.pnpm` store in the packaged runtime to prevent missing module errors during onboarding on fresh machines.
