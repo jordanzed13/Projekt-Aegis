@@ -19,3 +19,23 @@
 - Fixed Aegis controller gateway client to use OpenClaw-validated client id/mode for WebSocket connect.
 - Added in-app provider update flow to swap API keys/models and restart OpenClaw without rerunning onboarding.
 - Cleaned Aegis proxy plugin paths during config overlay to stop duplicate plugin warnings.
+- Added session/lifetime alert metrics with JSONL audit log rotation (50 MB cap) and metrics persistence.
+- Added controller endpoints for metrics + model catalog, with Aegis dashboard UI for counts/log access.
+- Auto-load provider catalog from OpenClaw `models.list` and show model suggestions in the UI.
+- Standardized Aegis data, logs, and metrics under `%APPDATA%/Projekt Aegis`.
+- Added auto-migration from legacy `%APPDATA%/aegis-desktop` data path on first run.
+- Added Agentsh-inspired policy heuristics (sensitive files, dangerous exec/env patterns, workspace-aware flags).
+- Added policy file override support with dashboard toggle and live reload.
+
+## 2026-02-07
+
+- Added timestamped audit log filenames and ensured the log file is created on app start.
+- Implemented 50 MB audit log rotation with archived log filenames prefixed `Archived_`.
+- Updated controller metrics to report the active log file path (post-rotation).
+- Tightened tool policy: main agent limited to `session_status` + `aegis_proxy`; exec agent granted core/fs/runtime tool groups.
+- Auto-enabled bundled OpenClaw channel plugins so channel configuration schemas render in the dashboard.
+- Packaged controller now includes `yaml` dependency; controller HTTP server starts immediately even if gateway is still connecting.
+- Improved `aegis_proxy` error messaging when the controller endpoint is unreachable.
+- Aegis proxy now aliases common shell calls (`ls`, `dir`, `pwd`, `whoami`) to safe local handlers.
+- Global tools profile forced to `full` so the Aegis exec agent can invoke all core tools.
+- Added local tool execution inside the Aegis controller for `exec`, `read`, `write`, `edit`, `list_dir`, `pwd`, and `whoami` so core filesystem/runtime tools no longer rely on OpenClaw `tools.invoke`.

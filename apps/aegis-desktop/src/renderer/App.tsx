@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import type {
   AegisAssetsStatus,
+  AegisModelChoice,
+  AegisMetricsSnapshot,
   AegisOnboardRequest,
+  AegisPolicySettings,
+  AegisPolicyStatus,
   AegisSetupStatus,
   AegisStatus,
 } from "./vite-env";
@@ -20,9 +24,24 @@ const initialAssets: AegisAssetsStatus = {
   },
 };
 
+const emptyCounts = {
+  green: 0,
+  yellow: 0,
+  red: 0,
+  error: 0,
+};
+
 const initialSetup: AegisSetupStatus = {
   onboardingComplete: false,
   gatewayToken: "",
+};
+
+const initialPolicyStatus: AegisPolicyStatus = {
+  ok: true,
+  enabled: false,
+  path: "",
+  usingFile: false,
+  controllerConnected: false,
 };
 
 type OnboardFormState = {
@@ -40,7 +59,7 @@ type ProviderFormState = {
   model: string;
 };
 
-const providerOptions = [
+const fallbackProviderOptions = [
   { value: "openai", label: "OpenAI" },
   { value: "anthropic", label: "Anthropic" },
   { value: "openrouter", label: "OpenRouter" },
@@ -49,12 +68,42 @@ const providerOptions = [
   { value: "skip", label: "Skip for now" },
 ];
 
+const titleCase = (value: string) =>
+  value
+    .split(/[-_]/)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+
+const providerLabel = (value: string) => {
+  const normalized = value.toLowerCase();
+  const known: Record<string, string> = {
+    openai: "OpenAI",
+    anthropic: "Anthropic",
+    openrouter: "OpenRouter",
+    gemini: "Google Gemini",
+    zai: "Z.AI",
+    qwen: "Qwen",
+    minimax: "MiniMax",
+    moonshot: "Moonshot",
+    kimi: "Kimi",
+    venice: "Venice",
+    xiaomi: "Xiaomi",
+  };
+  return known[normalized] ?? titleCase(value);
+};
+
 const modelHints: Record<string, string> = {
   openai: "openai/gpt-4.1",
   anthropic: "anthropic/claude-sonnet-4-5",
   openrouter: "openrouter/anthropic/claude-3.7-sonnet",
   gemini: "google/gemini-1.5-pro",
   zai: "zai/glm-4.5",
+  qwen: "qwen/qwen2.5-72b-instruct",
+  minimax: "minimax/abab-6.5",
+  moonshot: "moonshot/moonshot-v1-32k",
+  kimi: "moonshot/kimi-latest",
+  venice: "venice/venice-2.0",
+  xiaomi: "xiaomi/mi-model",
 };
 
 export default function App() {
@@ -69,6 +118,23 @@ export default function App() {
   const [providerBusy, setProviderBusy] = useState(false);
   const [providerError, setProviderError] = useState<string | null>(null);
   const [showProviderForm, setShowProviderForm] = useState(false);
+  const [metrics, setMetrics] = useState<AegisMetricsSnapshot>({
+    ok: false,
+    session: emptyCounts,
+    lifetime: emptyCounts,
+  });
+  const [metricsView, setMetricsView] = useState<"session" | "lifetime">("session");
+  const [metricsError, setMetricsError] = useState<string | null>(null);
+  const [logPath, setLogPath] = useState<string>("-");
+  const [policyStatus, setPolicyStatus] = useState<AegisPolicyStatus>(initialPolicyStatus);
+  const [policyForm, setPolicyForm] = useState<AegisPolicySettings>({
+    enabled: false,
+    path: "",
+  });
+  const [policyBusy, setPolicyBusy] = useState(false);
+  const [policyError, setPolicyError] = useState<string | null>(null);
+  const [modelCatalog, setModelCatalog] = useState<AegisModelChoice[]>([]);
+  const [modelsError, setModelsError] = useState<string | null>(null);
   const [step, setStep] = useState(0);
   const [form, setForm] = useState<OnboardFormState>({
     acceptRisk: false,
@@ -110,6 +176,17 @@ export default function App() {
         }));
       }
     });
+    window.aegis.logPath().then((next) => {
+      if (mounted && next?.path) {
+        setLogPath(next.path);
+      }
+    });
+    window.aegis.policyStatus().then((next) => {
+      if (mounted && next) {
+        setPolicyStatus(next);
+        setPolicyForm({ enabled: next.enabled, path: next.path });
+      }
+    });
     const unsubscribe = window.aegis.onLog((line) => {
       setLogs((prev) => [line, ...prev].slice(0, 500));
     });
@@ -123,6 +200,103 @@ export default function App() {
     };
   }, [bridgeReady]);
 
+  useEffect(() => {
+    if (!bridgeReady) {
+      return;
+    }
+    let active = true;
+    const loadModels = async () => {
+      const result = await window.aegis.models();
+      if (!active) {
+        return;
+      }
+      if (result.ok) {
+        setModelCatalog(result.models ?? []);
+        setModelsError(null);
+      } else {
+        setModelsError(result.error ?? "Unable to load models.");
+      }
+    };
+    void loadModels();
+    return () => {
+      active = false;
+    };
+  }, [bridgeReady, status.openclawRunning]);
+
+  useEffect(() => {
+    if (!bridgeReady) {
+      return;
+    }
+    let active = true;
+    const loadMetrics = async () => {
+      const result = await window.aegis.metrics();
+      if (!active) {
+        return;
+      }
+      if (result.ok) {
+        setMetrics(result);
+        if (result.logPath) {
+          setLogPath(result.logPath);
+        }
+        setMetricsError(null);
+      } else {
+        setMetricsError(result.error ?? "Unable to load metrics.");
+      }
+    };
+    void loadMetrics();
+    const timer = setInterval(loadMetrics, 3000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [bridgeReady, status.controllerRunning]);
+
+  useEffect(() => {
+    if (!bridgeReady) {
+      return;
+    }
+    let active = true;
+    const loadPolicy = async () => {
+      const result = await window.aegis.policyStatus();
+      if (!active) {
+        return;
+      }
+      setPolicyStatus(result);
+      setPolicyError(result.ok ? null : result.lastError ?? "Unable to load policy status.");
+      setPolicyForm((prev) => {
+        if (prev.path && prev.path !== result.path) {
+          return prev;
+        }
+        if (prev.enabled === result.enabled && prev.path === result.path) {
+          return prev;
+        }
+        return { enabled: result.enabled, path: result.path };
+      });
+    };
+    void loadPolicy();
+    const timer = setInterval(loadPolicy, 5000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [bridgeReady, status.controllerRunning]);
+
+  const providerChoices = useMemo(() => {
+    if (modelCatalog.length === 0) {
+      return fallbackProviderOptions.filter((option) => option.value !== "skip");
+    }
+    const providers = Array.from(new Set(modelCatalog.map((model) => model.provider))).sort();
+    return providers.map((provider) => ({ value: provider, label: providerLabel(provider) }));
+  }, [modelCatalog]);
+
+  const wizardProviderOptions = useMemo(() => {
+    const hasSkip = providerChoices.some((option) => option.value === "skip");
+    if (hasSkip) {
+      return providerChoices;
+    }
+    return [...providerChoices, { value: "skip", label: "Skip for now" }];
+  }, [providerChoices]);
+
   const modelPlaceholder = useMemo(
     () => modelHints[form.provider] ?? "provider/model",
     [form.provider],
@@ -130,6 +304,20 @@ export default function App() {
   const providerModelPlaceholder = useMemo(
     () => modelHints[providerForm.provider] ?? "provider/model",
     [providerForm.provider],
+  );
+  const wizardModelOptions = useMemo(
+    () =>
+      modelCatalog
+        .filter((model) => model.provider === form.provider)
+        .map((model) => model.id),
+    [modelCatalog, form.provider],
+  );
+  const providerModelOptions = useMemo(
+    () =>
+      modelCatalog
+        .filter((model) => model.provider === providerForm.provider)
+        .map((model) => model.id),
+    [modelCatalog, providerForm.provider],
   );
 
   useEffect(() => {
@@ -176,6 +364,44 @@ export default function App() {
     } finally {
       setAssetsBusy(false);
     }
+  };
+
+  const handleOpenLog = async () => {
+    await window.aegis.openLog();
+  };
+
+  const handleOpenLogFolder = async () => {
+    await window.aegis.openLogFolder();
+  };
+
+  const handlePolicySave = async () => {
+    setPolicyBusy(true);
+    setPolicyError(null);
+    try {
+      const result = await window.aegis.policyUpdate({
+        enabled: policyForm.enabled,
+        path: policyForm.path,
+      });
+      setPolicyStatus(result);
+      setPolicyForm({ enabled: result.enabled, path: result.path });
+      if (!result.ok) {
+        setPolicyError(result.lastError ?? "Policy update failed.");
+      }
+    } finally {
+      setPolicyBusy(false);
+    }
+  };
+
+  const handlePolicyReset = () => {
+    setPolicyForm({ enabled: policyStatus.enabled, path: policyStatus.path });
+  };
+
+  const handleOpenPolicyFile = async () => {
+    await window.aegis.openPolicyFile();
+  };
+
+  const handleOpenPolicyFolder = async () => {
+    await window.aegis.openPolicyFolder();
   };
 
   const handleOnboard = async () => {
@@ -239,6 +465,9 @@ export default function App() {
       setForm((prev) => ({ ...prev, gatewayToken: token }));
     }
   };
+
+  const activeCounts =
+    metricsView === "session" ? metrics.session ?? emptyCounts : metrics.lifetime ?? emptyCounts;
 
   const stepBlocked =
     (step === 0 && !form.acceptRisk) ||
@@ -318,7 +547,7 @@ export default function App() {
                       setForm((prev) => ({ ...prev, provider: event.target.value }))
                     }
                   >
-                    {providerOptions.map((option) => (
+                    {wizardProviderOptions.map((option) => (
                       <option key={option.value} value={option.value}>
                         {option.label}
                       </option>
@@ -354,14 +583,23 @@ export default function App() {
                 <input
                   type="text"
                   placeholder={modelPlaceholder}
+                  list="wizard-model-options"
                   value={form.model}
                   onChange={(event) => setForm((prev) => ({ ...prev, model: event.target.value }))}
                 />
+                <datalist id="wizard-model-options">
+                  {wizardModelOptions.map((option) => (
+                    <option key={option} value={option} />
+                  ))}
+                </datalist>
               </label>
               <p className="muted">
                 Use the <code>provider/model</code> format. You can change this later in the
                 OpenClaw dashboard.
               </p>
+              {modelsError && (
+                <p className="muted">Model catalog unavailable: {modelsError}</p>
+              )}
             </div>
           )}
 
@@ -503,11 +741,90 @@ export default function App() {
       </section>
 
       <section className="panel">
+        <div className="panel-title">Policy File</div>
+        <p className="muted">
+          Enable a local policy file to override Aegis risk rules (sensitive files, command
+          patterns, env filters). Changes apply immediately if the controller is running.
+        </p>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={policyForm.enabled}
+            onChange={(event) =>
+              setPolicyForm((prev) => ({ ...prev, enabled: event.target.checked }))
+            }
+          />
+          Use policy file overrides
+        </label>
+        <div className="form-grid">
+          <label className="form-field">
+            Policy File Path
+            <input
+              type="text"
+              placeholder="C:\\Users\\<you>\\AppData\\Roaming\\Projekt Aegis\\policy.json"
+              value={policyForm.path}
+              onChange={(event) => setPolicyForm((prev) => ({ ...prev, path: event.target.value }))}
+            />
+          </label>
+        </div>
+        <div className="buttons">
+          <button className="primary" onClick={handlePolicySave} disabled={policyBusy}>
+            {policyBusy ? "Applying..." : "Apply Policy"}
+          </button>
+          <button className="ghost" onClick={handlePolicyReset} disabled={policyBusy}>
+            Reset
+          </button>
+          <button className="ghost" onClick={handleOpenPolicyFile}>
+            Open Policy File
+          </button>
+          <button className="ghost" onClick={handleOpenPolicyFolder}>
+            Open Policy Folder
+          </button>
+        </div>
+        <div className="status-grid">
+          <div>Controller: {policyStatus.controllerConnected ? "connected" : "offline"}</div>
+          <div>Policy Source: {policyStatus.usingFile ? "file" : "default"}</div>
+          <div>Last Loaded: {policyStatus.lastLoadedAt ?? "-"}</div>
+          <div>Workspace Root: {policyStatus.workspaceRoot ?? "-"}</div>
+        </div>
+        {policyError && <div className="assets-error">Policy error: {policyError}</div>}
+      </section>
+
+      <section className="panel">
+        <div className="panel-title">Alerts & Metrics</div>
+        <div className="buttons">
+          <button
+            className="ghost"
+            onClick={() =>
+              setMetricsView((prev) => (prev === "session" ? "lifetime" : "session"))
+            }
+          >
+            Viewing: {metricsView === "session" ? "Session" : "Lifetime"}
+          </button>
+          <button className="ghost" onClick={handleOpenLog}>
+            Open Log File
+          </button>
+          <button className="ghost" onClick={handleOpenLogFolder}>
+            Open Log Folder
+          </button>
+        </div>
+        <div className="status-grid">
+          <div>Green: {activeCounts.green}</div>
+          <div>Yellow: {activeCounts.yellow}</div>
+          <div>Red: {activeCounts.red}</div>
+          <div>Error: {activeCounts.error}</div>
+          <div>Log Path: {logPath}</div>
+        </div>
+        {metricsError && <div className="assets-error">Metrics error: {metricsError}</div>}
+      </section>
+
+      <section className="panel">
         <div className="panel-title">Model & Credentials</div>
         <p className="muted">
           If the OpenClaw dashboard shows blank replies, it usually means the provider is rate
           limited or out of quota. Update the API key or switch providers here.
         </p>
+        {modelsError && <p className="muted">Model catalog unavailable: {modelsError}</p>}
         <div className="buttons">
           <button className="ghost" onClick={() => setShowProviderForm((prev) => !prev)}>
             {showProviderForm ? "Close" : "Update Provider"}
@@ -524,13 +841,11 @@ export default function App() {
                     setProviderForm((prev) => ({ ...prev, provider: event.target.value }))
                   }
                 >
-                  {providerOptions
-                    .filter((option) => option.value !== "skip")
-                    .map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
+                  {providerChoices.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label className="form-field">
@@ -549,11 +864,17 @@ export default function App() {
                 <input
                   type="text"
                   placeholder={providerModelPlaceholder}
+                  list="provider-model-options"
                   value={providerForm.model}
                   onChange={(event) =>
                     setProviderForm((prev) => ({ ...prev, model: event.target.value }))
                   }
                 />
+                <datalist id="provider-model-options">
+                  {providerModelOptions.map((option) => (
+                    <option key={option} value={option} />
+                  ))}
+                </datalist>
               </label>
             </div>
             {providerError && <div className="assets-error">Update failed: {providerError}</div>}

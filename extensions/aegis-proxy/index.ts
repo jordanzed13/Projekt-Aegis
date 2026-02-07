@@ -45,12 +45,21 @@ export default function register(api) {
         context: { agentReason: params.reason },
       };
 
-      const controllerRes = await fetch(`${controllerUrl}/proxy`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
+      let controllerRes;
+      try {
+        controllerRes = await fetch(`${controllerUrl}/proxy`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `Aegis controller unreachable at ${controllerUrl}/proxy. ` +
+            `Ensure Projekt Aegis is running. (${message})`,
+        );
+      }
 
       const body = await controllerRes.json();
       if (!controllerRes.ok) {

@@ -32,6 +32,10 @@ export type PolicyDecision = {
 export type PolicyConfig = {
   sensitiveFiles: string[];
   dangerousCommands: string[];
+  blockedEnvKeys: string[];
+  blockedEnvPrefixes: string[];
+  sensitiveEnvKeys: string[];
+  workspaceRoots: string[];
   allowedDomains: string[];
   suspiciousThresholds: {
     maxRequestsPerMinute: number;
@@ -43,6 +47,7 @@ export type AuditEventType =
   | "REQUEST"
   | "DECISION"
   | "EXECUTION"
+  | "ERROR"
   | "USER_ALERT"
   | "USER_APPROVAL";
 

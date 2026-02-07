@@ -4,7 +4,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -14,6 +14,8 @@ type AegisSettings = {
   provider?: string;
   model?: string;
   communication?: "web" | "messaging";
+  policyFileEnabled?: boolean;
+  policyFilePath?: string;
 };
 
 type AegisSetupStatus = {
@@ -40,6 +42,28 @@ type UpdateProviderRequest = {
   model?: string;
 };
 
+type PolicySettings = {
+  enabled: boolean;
+  path: string;
+};
+
+type PolicyStatus = PolicySettings & {
+  ok: boolean;
+  usingFile: boolean;
+  lastLoadedAt?: string;
+  lastError?: string;
+  workspaceRoot?: string;
+};
+
+type MigrationReport = {
+  migrated: boolean;
+  entries: string[];
+  from: string;
+  to: string;
+  reason?: string;
+  error?: string;
+};
+
 let mainWindow: BrowserWindow | null = null;
 let openclawProcess: ChildProcessWithoutNullStreams | null = null;
 let controllerProcess: ChildProcessWithoutNullStreams | null = null;
@@ -54,7 +78,10 @@ const isDev = Boolean(process.env.ELECTRON_RENDERER_URL);
 
 const getRepoRoot = () => process.cwd();
 
-const resolveSettingsPath = () => path.join(app.getPath("userData"), "aegis-settings.json");
+const resolveAegisDataDir = () => path.join(app.getPath("appData"), "Projekt Aegis");
+
+const resolveSettingsPath = () =>
+  path.join(resolveAegisDataDir(), "aegis-settings.json");
 
 const loadSettings = async (): Promise<AegisSettings> => {
   try {
@@ -66,6 +93,8 @@ const loadSettings = async (): Promise<AegisSettings> => {
       provider: parsed.provider,
       model: parsed.model,
       communication: parsed.communication,
+      policyFileEnabled: parsed.policyFileEnabled,
+      policyFilePath: parsed.policyFilePath,
     };
   } catch {
     return { onboardingComplete: false };
@@ -73,16 +102,290 @@ const loadSettings = async (): Promise<AegisSettings> => {
 };
 
 const saveSettings = async (next: AegisSettings) => {
-  settings = next;
+  settings = { ...settings, ...next };
   await fs.mkdir(path.dirname(resolveSettingsPath()), { recursive: true });
-  await fs.writeFile(resolveSettingsPath(), `${JSON.stringify(next, null, 2)}\n`, "utf8");
+  await fs.writeFile(resolveSettingsPath(), `${JSON.stringify(settings, null, 2)}\n`, "utf8");
 };
 
-const resolveOpenClawConfigPath = () => path.join(app.getPath("userData"), "openclaw.json");
-const resolveOpenClawStateDir = () => path.join(app.getPath("userData"), "openclaw-state");
-const resolveWorkspaceDir = () => path.join(app.getPath("userData"), "workspace");
+const resolveOpenClawConfigPath = () => path.join(resolveAegisDataDir(), "openclaw.json");
+const resolveOpenClawStateDir = () => path.join(resolveAegisDataDir(), "openclaw-state");
+const resolveWorkspaceDir = () => path.join(resolveAegisDataDir(), "workspace");
+const resolveAegisLogsDir = () => path.join(resolveAegisDataDir(), "logs");
+const padNumber = (value: number, size = 2) => String(value).padStart(size, "0");
+const formatLogTimestamp = (date = new Date()) => {
+  const year = date.getUTCFullYear();
+  const month = padNumber(date.getUTCMonth() + 1);
+  const day = padNumber(date.getUTCDate());
+  const hours = padNumber(date.getUTCHours());
+  const minutes = padNumber(date.getUTCMinutes());
+  const seconds = padNumber(date.getUTCSeconds());
+  return `${year}${month}${day}_${hours}${minutes}${seconds}`;
+};
+const buildLogFileName = (timestamp: string) => `aegis_audit_${timestamp}.jsonl`;
+let sessionLogPath: string | null = null;
+const ensureSessionLogFile = async () => {
+  if (!sessionLogPath) {
+    sessionLogPath = path.join(resolveAegisLogsDir(), buildLogFileName(formatLogTimestamp()));
+  }
+  await fs.mkdir(resolveAegisLogsDir(), { recursive: true });
+  try {
+    await fs.access(sessionLogPath);
+  } catch {
+    await fs.writeFile(sessionLogPath, "");
+  }
+  return sessionLogPath;
+};
+const resolveAegisMetricsPath = () => path.join(resolveAegisDataDir(), "metrics.json");
+const resolvePolicyFilePath = () => path.join(resolveAegisDataDir(), "policy.json");
 const resolveAuthProfilesPath = (agentId = "main") =>
   path.join(resolveOpenClawStateDir(), "agents", agentId, "agent", "auth-profiles.json");
+
+const resolveLegacyUserDataDir = () => app.getPath("userData");
+
+const pathExists = async (target: string) => {
+  try {
+    await fs.access(target);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const isDirEmpty = async (target: string) => {
+  try {
+    const entries = await fs.readdir(target);
+    return entries.length === 0;
+  } catch {
+    return true;
+  }
+};
+
+const migrateLegacyUserData = async (): Promise<MigrationReport> => {
+  const legacyDir = resolveLegacyUserDataDir();
+  const nextDir = resolveAegisDataDir();
+  const legacyNormalized = path.resolve(legacyDir).toLowerCase();
+  const nextNormalized = path.resolve(nextDir).toLowerCase();
+  if (legacyNormalized === nextNormalized) {
+    return { migrated: false, entries: [], from: legacyDir, to: nextDir, reason: "same_path" };
+  }
+  if (!(await pathExists(legacyDir))) {
+    return { migrated: false, entries: [], from: legacyDir, to: nextDir, reason: "legacy_missing" };
+  }
+  if (!(await isDirEmpty(nextDir))) {
+    return {
+      migrated: false,
+      entries: [],
+      from: legacyDir,
+      to: nextDir,
+      reason: "target_not_empty",
+    };
+  }
+
+  const migrated: string[] = [];
+  const entries = [
+    "aegis-settings.json",
+    "openclaw.json",
+    "openclaw-state",
+    "workspace",
+    "assets",
+    "logs",
+    "metrics.json",
+  ];
+  try {
+    await fs.mkdir(nextDir, { recursive: true });
+    for (const entry of entries) {
+      const src = path.join(legacyDir, entry);
+      const dest = path.join(nextDir, entry);
+      if (!(await pathExists(src)) || (await pathExists(dest))) {
+        continue;
+      }
+      await fs.mkdir(path.dirname(dest), { recursive: true });
+      await fs.cp(src, dest, { recursive: true });
+      migrated.push(entry);
+    }
+    return { migrated: migrated.length > 0, entries: migrated, from: legacyDir, to: nextDir };
+  } catch (err) {
+    return {
+      migrated: false,
+      entries: migrated,
+      from: legacyDir,
+      to: nextDir,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+};
+
+const policyTemplate = {
+  sensitiveFiles: [
+    ".ssh/",
+    ".aws/",
+    ".env",
+    ".env.",
+    ".npmrc",
+    ".git-credentials",
+    ".git/config",
+    "id_rsa",
+    "id_ed25519",
+    "credentials",
+    "secrets",
+    "System32",
+    "Windows\\System32",
+    "AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup",
+  ],
+  dangerousCommands: [
+    "rm -rf",
+    "del /s",
+    "rmdir /s",
+    "rd /s",
+    "format ",
+    "diskpart",
+    "bcdedit",
+    "vssadmin delete",
+    "reg add",
+    "reg delete",
+    "regedit",
+    "schtasks",
+    "sc ",
+    "net user",
+    "net localgroup",
+    "takeown",
+    "icacls /grant",
+    "powershell -enc",
+    "powershell -encodedcommand",
+    "Invoke-Expression",
+    "| bash",
+    "curl | sh",
+    "wget | sh",
+  ],
+  blockedEnvKeys: [
+    "PATH",
+    "NODE_OPTIONS",
+    "NODE_PATH",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "RUBYLIB",
+    "PERL5LIB",
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "LD_AUDIT",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "BASH_ENV",
+    "ENV",
+  ],
+  blockedEnvPrefixes: ["LD_", "DYLD_"],
+  sensitiveEnvKeys: ["KEY", "TOKEN", "SECRET", "PASSWORD", "PRIVATE"],
+  workspaceRoots: [],
+  allowedDomains: ["openai.com", "anthropic.com", "openrouter.ai", "googleapis.com", "github.com"],
+  suspiciousThresholds: {
+    maxRequestsPerMinute: 6,
+    maxDirListings: 3,
+  },
+};
+
+const resolvePolicySettings = (): PolicySettings => ({
+  enabled: Boolean(settings.policyFileEnabled),
+  path: settings.policyFilePath?.trim() || resolvePolicyFilePath(),
+});
+
+const ensurePolicyTemplate = async (policyPath: string) => {
+  try {
+    await fs.access(policyPath);
+    return;
+  } catch {
+    // continue
+  }
+  await fs.mkdir(path.dirname(policyPath), { recursive: true });
+  await fs.writeFile(policyPath, `${JSON.stringify(policyTemplate, null, 2)}\n`, "utf8");
+};
+
+const fetchPolicyStatus = async (): Promise<PolicyStatus> => {
+  const base = resolvePolicySettings();
+  if (!controllerProcess) {
+    return {
+      ok: true,
+      controllerConnected: false,
+      enabled: base.enabled,
+      path: base.path,
+      usingFile: false,
+    };
+  }
+  try {
+    const result = await fetchControllerJson("/policy");
+    return {
+      ok: Boolean(result?.ok),
+      controllerConnected: true,
+      enabled: Boolean(result?.enabled ?? base.enabled),
+      path: String(result?.path ?? base.path),
+      usingFile: Boolean(result?.usingFile),
+      lastLoadedAt: typeof result?.lastLoadedAt === "string" ? result.lastLoadedAt : undefined,
+      lastError: typeof result?.lastError === "string" ? result.lastError : undefined,
+      workspaceRoot: typeof result?.workspaceRoot === "string" ? result.workspaceRoot : undefined,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      controllerConnected: false,
+      enabled: base.enabled,
+      path: base.path,
+      usingFile: false,
+      lastError: message,
+    };
+  }
+};
+
+const applyPolicySettings = async (next: PolicySettings): Promise<PolicyStatus> => {
+  const normalizedPath = next.path.trim() || resolvePolicyFilePath();
+  const enabled = Boolean(next.enabled);
+  if (enabled) {
+    await ensurePolicyTemplate(normalizedPath);
+  }
+  await saveSettings({
+    ...settings,
+    policyFileEnabled: enabled,
+    policyFilePath: normalizedPath,
+  });
+
+  if (!controllerProcess) {
+    return {
+      ok: true,
+      controllerConnected: false,
+      enabled,
+      path: normalizedPath,
+      usingFile: false,
+    };
+  }
+
+  try {
+    const url = `http://127.0.0.1:${controllerPort}/policy`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled, path: normalizedPath }),
+    });
+    const body = (await res.json()) as Record<string, unknown>;
+    return {
+      ok: Boolean(body?.ok),
+      controllerConnected: true,
+      enabled: Boolean(body?.enabled ?? enabled),
+      path: String(body?.path ?? normalizedPath),
+      usingFile: Boolean(body?.usingFile),
+      lastLoadedAt: typeof body?.lastLoadedAt === "string" ? body.lastLoadedAt : undefined,
+      lastError: typeof body?.lastError === "string" ? body.lastError : undefined,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      controllerConnected: false,
+      enabled,
+      path: normalizedPath,
+      usingFile: false,
+      lastError: message,
+    };
+  }
+};
 
 const ensureGatewayToken = async () => {
   if (gatewayToken) {
@@ -125,6 +428,44 @@ const resolveOpenClawRoot = () => {
   return path.join(process.resourcesPath, "openclaw");
 };
 
+const resolveOpenClawExtensionsDir = () => path.join(resolveOpenClawRoot(), "extensions");
+let cachedChannelPluginIds: string[] | null = null;
+const listBundledChannelPluginIds = () => {
+  if (cachedChannelPluginIds) {
+    return cachedChannelPluginIds;
+  }
+  const extensionsDir = resolveOpenClawExtensionsDir();
+  if (!existsSync(extensionsDir)) {
+    cachedChannelPluginIds = [];
+    return cachedChannelPluginIds;
+  }
+  const entries = readdirSync(extensionsDir, { withFileTypes: true });
+  const ids: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const manifestPath = path.join(extensionsDir, entry.name, "openclaw.plugin.json");
+    if (!existsSync(manifestPath)) {
+      continue;
+    }
+    try {
+      const raw = readFileSync(manifestPath, "utf8");
+      const parsed = JSON.parse(raw) as { id?: string; channels?: unknown };
+      const hasChannels = Array.isArray(parsed?.channels) && parsed.channels.length > 0;
+      if (!hasChannels) {
+        continue;
+      }
+      const id = typeof parsed.id === "string" ? parsed.id.trim() : "";
+      ids.push(id || entry.name);
+    } catch {
+      // ignore invalid manifest
+    }
+  }
+  cachedChannelPluginIds = Array.from(new Set(ids.filter(Boolean)));
+  return cachedChannelPluginIds;
+};
+
 const resolveControllerEntry = async () => {
   if (!isDev) {
     return path.join(process.resourcesPath, "controller", "index.js");
@@ -146,7 +487,7 @@ const resolvePluginPath = () => {
   return path.join(process.resourcesPath, "extensions", "aegis-proxy");
 };
 
-const resolveAssetsRoot = () => path.join(app.getPath("userData"), "assets");
+const resolveAssetsRoot = () => path.join(resolveAegisDataDir(), "assets");
 
 const resolvePlaywrightAssetsPath = () => path.join(resolveAssetsRoot(), "playwright-browsers");
 
@@ -232,19 +573,32 @@ const applyAegisOverlay = (
   );
   pluginPaths.add(pluginPath);
   const pluginEntries = (plugins.entries as Record<string, unknown> | undefined) ?? {};
+  const nextPluginEntries: Record<string, unknown> = {
+    ...pluginEntries,
+    "aegis-proxy": { enabled: true, config: { controllerUrl } },
+  };
+  for (const pluginId of listBundledChannelPluginIds()) {
+    const existing = nextPluginEntries[pluginId];
+    if (existing && typeof existing === "object") {
+      const entry = existing as Record<string, unknown>;
+      if (entry.enabled === false) {
+        continue;
+      }
+      nextPluginEntries[pluginId] = { ...entry, enabled: entry.enabled ?? true };
+    } else {
+      nextPluginEntries[pluginId] = { enabled: true };
+    }
+  }
   next.plugins = {
     ...plugins,
     load: { ...pluginLoad, paths: Array.from(pluginPaths) },
-    entries: {
-      ...pluginEntries,
-      "aegis-proxy": { enabled: true, config: { controllerUrl } },
-    },
+    entries: nextPluginEntries,
   };
 
   const tools = (next.tools as Record<string, unknown> | undefined) ?? {};
   next.tools = {
     ...tools,
-    profile: (tools.profile as string | undefined) ?? "minimal",
+    profile: "full",
   };
 
   const agents = (next.agents as Record<string, unknown> | undefined) ?? {};
@@ -254,14 +608,16 @@ const applyAegisOverlay = (
     ...(agentList.find((agent) => agent?.id === "main") ?? {}),
     id: "main",
     default: true,
-    tools: { allow: ["aegis_proxy"] },
+    tools: { profile: "full", allow: ["session_status", "aegis_proxy"] },
   };
   if (modelOverride) {
     mainAgent.model = modelOverride;
   }
   const execAgent: Record<string, unknown> = {
     id: "aegis-exec",
-    tools: { allow: ["group:openclaw"] },
+    tools: {
+      profile: "full",
+    },
   };
   const defaults = (agents.defaults as Record<string, unknown> | undefined) ?? {};
   const existingModel = defaults.model;
@@ -336,6 +692,7 @@ const startController = async () => {
     return;
   }
   await ensureGatewayToken();
+  const logPath = await ensureSessionLogFile();
   const controllerEntry = await resolveControllerEntry();
   if (controllerEntry.endsWith(".ts")) {
     emitLog("[controller] Build required: run npm run build --workspace apps/aegis-controller");
@@ -349,6 +706,12 @@ const startController = async () => {
       AEGIS_GATEWAY_HTTP: `http://127.0.0.1:${gatewayPort}`,
       AEGIS_GATEWAY_WS: `ws://127.0.0.1:${gatewayPort}`,
       AEGIS_CONTROLLER_PORT: String(controllerPort),
+      AEGIS_LOG_PATH: logPath,
+      AEGIS_LOG_MAX_MB: process.env.AEGIS_LOG_MAX_MB ?? "50",
+      AEGIS_METRICS_PATH: resolveAegisMetricsPath(),
+      AEGIS_WORKSPACE_DIR: resolveWorkspaceDir(),
+      AEGIS_POLICY_PATH: settings.policyFilePath ?? resolvePolicyFilePath(),
+      AEGIS_POLICY_ENABLED: settings.policyFileEnabled ? "true" : "false",
     },
   });
 
@@ -372,6 +735,15 @@ const getStatus = () => ({
   openclawRunning: Boolean(openclawProcess),
   gatewayPort,
 });
+
+const fetchControllerJson = async <T = unknown>(pathName: string): Promise<T> => {
+  const url = `http://127.0.0.1:${controllerPort}${pathName}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Controller request failed (${res.status})`);
+  }
+  return (await res.json()) as T;
+};
 
 const emitLog = (line: string) => {
   if (!mainWindow) {
@@ -449,6 +821,19 @@ const runOpenClawOnboard = async (payload: OnboardRequest) => {
     openrouter: { choice: "openrouter-api-key", flag: "--openrouter-api-key" },
     gemini: { choice: "gemini-api-key", flag: "--gemini-api-key" },
     zai: { choice: "zai-api-key", flag: "--zai-api-key" },
+    xiaomi: { choice: "xiaomi-api-key", flag: "--xiaomi-api-key" },
+    minimax: { choice: "minimax-api", flag: "--minimax-api-key" },
+    "minimax-lightning": { choice: "minimax-api-lightning", flag: "--minimax-api-key" },
+    moonshot: { choice: "moonshot-api-key", flag: "--moonshot-api-key" },
+    kimi: { choice: "kimi-code-api-key", flag: "--kimi-code-api-key" },
+    synthetic: { choice: "synthetic-api-key", flag: "--synthetic-api-key" },
+    venice: { choice: "venice-api-key", flag: "--venice-api-key" },
+    "ai-gateway": { choice: "ai-gateway-api-key", flag: "--ai-gateway-api-key" },
+    "cloudflare-ai-gateway": {
+      choice: "cloudflare-ai-gateway-api-key",
+      flag: "--cloudflare-ai-gateway-api-key",
+    },
+    "opencode-zen": { choice: "opencode-zen", flag: "--opencode-zen-api-key" },
   };
 
   if (provider !== "skip") {
@@ -656,6 +1041,65 @@ const downloadPlaywrightAssets = async () => {
   return { started: true };
 };
 
+const getMetrics = async () => {
+  try {
+    return await fetchControllerJson("/metrics");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: message };
+  }
+};
+
+const getModels = async () => {
+  try {
+    return await fetchControllerJson("/models");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: message, models: [] };
+  }
+};
+
+const resolveActiveLogPath = async () => {
+  if (controllerProcess) {
+    try {
+      const result = await fetchControllerJson<{ logPath?: unknown }>("/metrics");
+      if (result && typeof result.logPath === "string") {
+        return result.logPath;
+      }
+    } catch {
+      // fall through
+    }
+  }
+  return ensureSessionLogFile();
+};
+
+const openAuditLog = async () => {
+  const logPath = await resolveActiveLogPath();
+  await shell.openPath(logPath);
+  return { path: logPath };
+};
+
+const openAuditLogFolder = async () => {
+  const logPath = await resolveActiveLogPath();
+  const dirPath = path.dirname(logPath);
+  await shell.openPath(dirPath);
+  return { path: dirPath };
+};
+
+const openPolicyFile = async () => {
+  const policyPath = resolvePolicySettings().path;
+  await ensurePolicyTemplate(policyPath);
+  await shell.openPath(policyPath);
+  return { path: policyPath };
+};
+
+const openPolicyFolder = async () => {
+  const policyPath = resolvePolicySettings().path;
+  const dirPath = path.dirname(policyPath);
+  await shell.openPath(dirPath);
+  return { path: dirPath };
+};
+
 const createWindow = () => {
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -675,11 +1119,21 @@ const createWindow = () => {
 };
 
 app.whenReady().then(async () => {
+  const migration = await migrateLegacyUserData();
   settings = await loadSettings();
   if (settings.gatewayToken) {
     gatewayToken = settings.gatewayToken;
   }
+  await ensureSessionLogFile();
   createWindow();
+
+  if (migration.migrated && migration.entries.length > 0) {
+    emitLog(
+      `[system] Migrated ${migration.entries.join(", ")} from ${migration.from} to ${migration.to}`,
+    );
+  } else if (migration.error) {
+    emitLog(`[system] Migration failed: ${migration.error}`);
+  }
 
   ipcMain.handle("aegis:start", async () => {
     await startOpenClaw();
@@ -701,6 +1155,17 @@ app.whenReady().then(async () => {
   ipcMain.handle("aegis:update-provider", async (_event, payload: UpdateProviderRequest) =>
     updateProviderAndModel(payload),
   );
+  ipcMain.handle("aegis:metrics", async () => getMetrics());
+  ipcMain.handle("aegis:models", async () => getModels());
+  ipcMain.handle("aegis:log-path", async () => ({ path: await resolveActiveLogPath() }));
+  ipcMain.handle("aegis:log-open", async () => openAuditLog());
+  ipcMain.handle("aegis:log-open-folder", async () => openAuditLogFolder());
+  ipcMain.handle("aegis:policy:get", async () => fetchPolicyStatus());
+  ipcMain.handle("aegis:policy:set", async (_event, payload: PolicySettings) =>
+    applyPolicySettings(payload),
+  );
+  ipcMain.handle("aegis:policy:open", async () => openPolicyFile());
+  ipcMain.handle("aegis:policy:open-folder", async () => openPolicyFolder());
 
   void emitAssetsStatus();
 

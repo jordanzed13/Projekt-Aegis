@@ -56,6 +56,53 @@ export type AegisAssetsDownloadResult = {
   message?: string;
 };
 
+export type AegisAlertCounts = {
+  green: number;
+  yellow: number;
+  red: number;
+  error: number;
+};
+
+export type AegisMetricsSnapshot = {
+  ok: boolean;
+  session?: AegisAlertCounts;
+  lifetime?: AegisAlertCounts;
+  logPath?: string;
+  error?: string;
+};
+
+export type AegisModelChoice = {
+  id: string;
+  name: string;
+  provider: string;
+  contextWindow?: number;
+  reasoning?: boolean;
+};
+
+export type AegisModelsResult = {
+  ok: boolean;
+  models: AegisModelChoice[];
+  error?: string;
+};
+
+export type AegisLogPathResult = {
+  path: string;
+};
+
+export type AegisPolicySettings = {
+  enabled: boolean;
+  path: string;
+};
+
+export type AegisPolicyStatus = AegisPolicySettings & {
+  ok: boolean;
+  usingFile: boolean;
+  controllerConnected: boolean;
+  lastLoadedAt?: string;
+  lastError?: string;
+  workspaceRoot?: string;
+};
+
 declare global {
   interface Window {
     aegis: {
@@ -68,6 +115,15 @@ declare global {
       openDashboard: () => Promise<{ url?: string }>;
       assetsStatus: () => Promise<AegisAssetsStatus>;
       downloadBrowserAssets: () => Promise<AegisAssetsDownloadResult>;
+      metrics: () => Promise<AegisMetricsSnapshot>;
+      models: () => Promise<AegisModelsResult>;
+      logPath: () => Promise<AegisLogPathResult>;
+      openLog: () => Promise<AegisLogPathResult>;
+      openLogFolder: () => Promise<AegisLogPathResult>;
+      policyStatus: () => Promise<AegisPolicyStatus>;
+      policyUpdate: (payload: AegisPolicySettings) => Promise<AegisPolicyStatus>;
+      openPolicyFile: () => Promise<AegisLogPathResult>;
+      openPolicyFolder: () => Promise<AegisLogPathResult>;
       onLog: (handler: (line: string) => void) => () => void;
       onAssetsStatus: (handler: (status: AegisAssetsStatus) => void) => () => void;
     };

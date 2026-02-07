@@ -2,11 +2,14 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { AuditLogger, decideRisk, defaultPolicy, type AuditEntry, type ToolCallRequest } from "@aegis/core";
+import { AuditLogger, decideRisk, type AuditEntry, type ToolCallRequest } from "@aegis/core";
 import type { GatewayClient } from "./gateway-client.js";
 import type { ApprovalManager } from "./approvals.js";
+import { invokeLocalTool, isLocalTool } from "./local-tools.js";
 import { invokeTool } from "./tool-invoke.js";
 import type { ControllerConfig } from "./config.js";
+import { AlertMetrics } from "./metrics.js";
+import { type PolicyFileState, resolvePolicy } from "./policy-file.js";
 
 export type ProxyRequest = {
   requestId?: string;
@@ -24,6 +27,29 @@ export type ProxyResponse = {
   error?: string;
 };
 
+const normalizeToolAlias = (toolName: string, toolArgs: Record<string, unknown>) => {
+  const normalized = toolName.trim().toLowerCase();
+  if (!normalized) {
+    return { toolName, toolArgs, aliasOf: undefined as string | undefined };
+  }
+  if (normalized === "ls" || normalized === "dir") {
+    const pathArg =
+      typeof toolArgs.path === "string"
+        ? toolArgs.path
+        : typeof toolArgs.cwd === "string"
+          ? toolArgs.cwd
+          : "";
+    return { toolName: "list_dir", toolArgs: { path: pathArg }, aliasOf: toolName };
+  }
+  if (normalized === "pwd") {
+    return { toolName: "pwd", toolArgs: {}, aliasOf: toolName };
+  }
+  if (normalized === "whoami") {
+    return { toolName: "whoami", toolArgs: {}, aliasOf: toolName };
+  }
+  return { toolName, toolArgs, aliasOf: undefined as string | undefined };
+};
+
 const readJson = async (req: http.IncomingMessage): Promise<unknown> => {
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
@@ -35,14 +61,39 @@ const readJson = async (req: http.IncomingMessage): Promise<unknown> => {
 
 export const createServer = (
   config: ControllerConfig,
-  _gateway: GatewayClient,
+  gateway: GatewayClient,
   approvals: ApprovalManager,
 ) => {
+  const defaultDataDir = process.env.APPDATA
+    ? path.join(process.env.APPDATA, "Projekt Aegis")
+    : path.join(os.homedir(), ".projekt-aegis");
   const logPath =
     process.env.AEGIS_LOG_PATH ??
-    path.join(os.homedir(), ".projekt-aegis", "logs", "aegis_audit_log.jsonl");
-  const audit = new AuditLogger({ logPath });
-  const policy = defaultPolicy;
+    path.join(defaultDataDir, "logs", "aegis_audit.jsonl");
+  const maxMb = Number(process.env.AEGIS_LOG_MAX_MB ?? 50);
+  const maxBytes = Number.isFinite(maxMb) && maxMb > 0 ? Math.floor(maxMb * 1024 * 1024) : undefined;
+  const audit = new AuditLogger({ logPath, maxBytes });
+  const metricsPath =
+    process.env.AEGIS_METRICS_PATH ??
+    path.join(defaultDataDir, "metrics.json");
+  const metrics = new AlertMetrics(metricsPath);
+  const workspaceRoot = process.env.AEGIS_WORKSPACE_DIR;
+  let policyState: PolicyFileState = {
+    enabled: ["1", "true", "yes", "on"].includes(
+      String(process.env.AEGIS_POLICY_ENABLED ?? "false").toLowerCase(),
+    ),
+    path: process.env.AEGIS_POLICY_PATH,
+    usingFile: false,
+  };
+  const resolvePolicyConfig = () => {
+    const result = resolvePolicy(policyState);
+    policyState = result.state;
+    const policy = result.policy;
+    if (workspaceRoot && (!policy.workspaceRoots || policy.workspaceRoots.length === 0)) {
+      return { ...policy, workspaceRoots: [workspaceRoot] };
+    }
+    return policy;
+  };
   const history: AuditEntry[] = [];
 
   return http.createServer(async (req, res) => {
@@ -52,17 +103,85 @@ export const createServer = (
       return;
     }
 
+    if (req.method === "GET" && req.url === "/metrics") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, ...metrics.snapshot(), logPath: audit.getLogPath() }));
+      return;
+    }
+
+    if (req.method === "GET" && req.url === "/models") {
+      try {
+        const result = await gateway.request<{ models?: unknown[] }>("models.list", {});
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, models: result?.models ?? [] }));
+        return;
+      } catch (err) {
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: String(err) }));
+        return;
+      }
+    }
+
+    if (req.method === "GET" && req.url === "/policy") {
+      const effective = resolvePolicyConfig();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          enabled: policyState.enabled,
+          path: policyState.path ?? "",
+          usingFile: policyState.usingFile,
+          lastLoadedAt: policyState.lastLoadedAt,
+          lastError: policyState.lastError,
+          workspaceRoot: effective.workspaceRoots?.[0],
+        }),
+      );
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/policy") {
+      try {
+        const body = (await readJson(req)) as { enabled?: boolean; path?: string };
+        if (typeof body.enabled === "boolean") {
+          policyState = { ...policyState, enabled: body.enabled };
+        }
+        if (typeof body.path === "string") {
+          const trimmed = body.path.trim();
+          policyState = { ...policyState, path: trimmed || undefined, mtimeMs: undefined };
+        }
+        policyState = { ...policyState, policy: undefined };
+        resolvePolicyConfig();
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            ok: true,
+            enabled: policyState.enabled,
+            path: policyState.path ?? "",
+            usingFile: policyState.usingFile,
+            lastLoadedAt: policyState.lastLoadedAt,
+            lastError: policyState.lastError,
+          }),
+        );
+        return;
+      } catch (err) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: String(err) }));
+        return;
+      }
+    }
+
     if (req.method === "POST" && req.url === "/proxy") {
       try {
         const body = (await readJson(req)) as ProxyRequest;
         const requestId = body.requestId ?? randomUUID();
+        const resolved = normalizeToolAlias(body.toolName, body.toolArgs ?? {});
         const toolRequest: ToolCallRequest = {
           requestId,
           timestamp: Date.now(),
           agentId: body.agentId,
           sessionKey: body.sessionKey,
-          toolName: body.toolName,
-          toolArgs: body.toolArgs ?? {},
+          toolName: resolved.toolName,
+          toolArgs: resolved.toolArgs ?? {},
           context: body.context,
         };
 
@@ -71,8 +190,12 @@ export const createServer = (
           requestId,
           agentId: body.agentId,
           sessionKey: body.sessionKey,
-          toolName: body.toolName,
-          payload: { toolArgs: body.toolArgs, context: body.context ?? {} },
+          toolName: resolved.toolName,
+          payload: {
+            toolArgs: resolved.toolArgs,
+            context: body.context ?? {},
+            originalTool: resolved.aliasOf ?? undefined,
+          },
         });
         history.unshift({
           id: requestId,
@@ -81,11 +204,16 @@ export const createServer = (
           requestId,
           agentId: body.agentId,
           sessionKey: body.sessionKey,
-          toolName: body.toolName,
-          payload: { toolArgs: body.toolArgs, context: body.context ?? {} },
+          toolName: resolved.toolName,
+          payload: {
+            toolArgs: resolved.toolArgs,
+            context: body.context ?? {},
+            originalTool: resolved.aliasOf ?? undefined,
+          },
         });
 
-        const decision = decideRisk(toolRequest, history, policy);
+        const decision = decideRisk(toolRequest, history, resolvePolicyConfig());
+        metrics.bump(decision.level);
         audit.append({
           type: "DECISION",
           requestId,
@@ -122,16 +250,16 @@ export const createServer = (
 
         if (decision.level === "RED") {
           const approvalHandle = approvals.createApproval({
-            toolName: body.toolName,
+            toolName: resolved.toolName,
             agentId: body.agentId,
             sessionKey: body.sessionKey,
             reason: decision.explanation,
-            commandSummary: `${body.toolName} ${JSON.stringify(body.toolArgs)}`,
+            commandSummary: `${resolved.toolName} ${JSON.stringify(resolved.toolArgs)}`,
           });
 
           await notify(
-            `DANGER: Agent requested ${body.toolName} ${JSON.stringify(
-              body.toolArgs,
+            `DANGER: Agent requested ${resolved.toolName} ${JSON.stringify(
+              resolved.toolArgs,
             )}. Reply /approve ${approvalHandle.id} allow-once|allow-always|deny.`,
           );
 
@@ -158,19 +286,46 @@ export const createServer = (
           }
         } else if (decision.level === "YELLOW") {
           await notify(
-            `ALERT: Agent is performing ${body.toolName} ${JSON.stringify(
-              body.toolArgs,
+            `ALERT: Agent is performing ${resolved.toolName} ${JSON.stringify(
+              resolved.toolArgs,
             )}. Reason: ${decision.explanation}`,
           );
         }
 
-        const result = await invokeTool({
-          gatewayHttpUrl: config.gatewayHttpUrl,
-          token: config.gatewayToken,
-          tool: body.toolName,
-          args: body.toolArgs,
-          sessionKey: execSessionKey,
-        });
+        let result: unknown;
+        try {
+          result = isLocalTool(resolved.toolName)
+            ? await invokeLocalTool({
+                toolName: resolved.toolName,
+                toolArgs: resolved.toolArgs,
+                workspaceRoot,
+              })
+            : await invokeTool({
+                gatewayHttpUrl: config.gatewayHttpUrl,
+                token: config.gatewayToken,
+                tool: resolved.toolName,
+                args: resolved.toolArgs,
+                sessionKey: execSessionKey,
+              });
+        } catch (err) {
+          metrics.bumpError();
+          audit.append({
+            type: "ERROR",
+            requestId,
+            agentId: body.agentId,
+            sessionKey: execSessionKey,
+            toolName: body.toolName,
+            payload: { error: String(err) },
+          });
+          const response: ProxyResponse = {
+            ok: false,
+            decision,
+            error: String(err),
+          };
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(response));
+          return;
+        }
 
         audit.append({
           type: "EXECUTION",
@@ -186,6 +341,12 @@ export const createServer = (
         res.end(JSON.stringify(response));
         return;
       } catch (err) {
+        metrics.bumpError();
+        audit.append({
+          type: "ERROR",
+          requestId: undefined,
+          payload: { error: String(err) },
+        });
         const response: ProxyResponse = {
           ok: false,
           decision: { level: "RED", action: "BLOCK", explanation: "Proxy error", tags: [] },

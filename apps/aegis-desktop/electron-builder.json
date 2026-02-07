@@ -47,6 +47,10 @@
       "to": "controller/node_modules/ws"
     },
     {
+      "from": "../../apps/aegis-controller/node_modules/yaml",
+      "to": "controller/node_modules/yaml"
+    },
+    {
       "from": "../../packages/aegis-core/dist",
       "to": "controller/node_modules/@aegis/core/dist"
     },

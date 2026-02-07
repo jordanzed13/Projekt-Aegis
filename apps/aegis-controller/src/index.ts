@@ -18,22 +18,25 @@ const main = async () => {
   });
   approvals = new ApprovalManager(gateway);
 
-  while (true) {
-    try {
-      await gateway.connect();
-      break;
-    } catch (err) {
-      console.error("Waiting for OpenClaw gateway...", err);
-      await sleep(2000);
-    }
-  }
-
   const server = createServer(config, gateway, approvals);
   server.listen(config.controllerPort, "127.0.0.1", () => {
     console.log(`Aegis Controller listening on 127.0.0.1:${config.controllerPort}`);
   });
 
-  console.log("Aegis Controller connected to OpenClaw gateway");
+  const connectGateway = async () => {
+    while (true) {
+      try {
+        await gateway.connect();
+        console.log("Aegis Controller connected to OpenClaw gateway");
+        break;
+      } catch (err) {
+        console.error("Waiting for OpenClaw gateway...", err);
+        await sleep(2000);
+      }
+    }
+  };
+
+  void connectGateway();
 
   process.on("SIGINT", () => {
     server.close();

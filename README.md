@@ -7,8 +7,12 @@ Projekt Aegis is a Windows-first security shell for OpenClaw. It runs OpenClaw l
 - Electron + React control dashboard
 - Sidecar controller that proxies all tool actions
 - RED/YELLOW/GREEN decision model with blocking approvals
-- Audit log with newest entries on top
+- Alert dashboard with session + lifetime counters
+- Audit log (JSONL, newest entries on top, 50 MB rotation with archives)
 - Local-only gateway binding (loopback) with token auth
+- Provider catalog auto-loaded from OpenClaw models list
+- Agentsh-inspired policy heuristics for sensitive files, dangerous commands, and risky env vars
+- Optional policy file overrides with live reload
 
 ## Quick Start (Development)
 
@@ -54,18 +58,29 @@ The app will spawn OpenClaw locally and the Aegis controller on first start.
      ```
      /approve <id> allow-once
      ```
+1. Use the **Model & Credentials** panel to update providers/models if you hit quota limits.
 
 ## Files & Paths
 
 - OpenClaw config: `%APPDATA%/Projekt Aegis/openclaw.json`
 - OpenClaw state: `%APPDATA%/Projekt Aegis/openclaw-state/`
-- Aegis audit log: `%USERPROFILE%/.projekt-aegis/logs/aegis_audit_log.jsonl`
+- OpenClaw workspace: `%APPDATA%/Projekt Aegis/workspace/`
+- Aegis audit log (current session): `%APPDATA%/Projekt Aegis/logs/aegis_audit_<UTC timestamp>.jsonl`
+- Aegis audit log archives: `%APPDATA%/Projekt Aegis/logs/Archived_aegis_audit_<UTC timestamp>.jsonl`
+- Aegis metrics: `%APPDATA%/Projekt Aegis/metrics.json`
+- Aegis policy file (optional): `%APPDATA%/Projekt Aegis/policy.json`
 
 ## Notes
 
 - The OpenClaw gateway is bound to loopback only and requires a token.
 - The proxy tool is provided by the `aegis-proxy` OpenClaw plugin.
 - Playwright browser assets are excluded from the installer and downloaded on first run via the Assets panel.
+- Audit logs rotate at 50 MB by default. The current session log keeps newest events on top; older logs are archived with a timestamped filename.
+- Legacy data in `%APPDATA%/aegis-desktop` is auto-migrated on first run.
+- Policy file overrides can be toggled on/off in the dashboard.
+- Policy file supports JSON (`.json`) or YAML (`.yml`/`.yaml`).
+- Channel plugins are auto-enabled so the OpenClaw dashboard can render channel configuration schemas.
+- Core filesystem/runtime tools (`exec`, `read`, `write`, `edit`, `list_dir`) execute locally inside the Aegis controller; other tools are proxied to OpenClaw.
 
 ## Build (Production)
 
