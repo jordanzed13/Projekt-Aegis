@@ -6,6 +6,8 @@ import type {
   AegisOnboardRequest,
   AegisPolicySettings,
   AegisPolicyStatus,
+  AegisProgressStatus,
+  AegisRuntimeStatus,
   AegisSetupStatus,
   AegisStatus,
 } from "./vite-env";
@@ -22,6 +24,16 @@ const initialAssets: AegisAssetsStatus = {
     path: "-",
     downloading: false,
   },
+};
+
+const initialRuntime: AegisRuntimeStatus = {
+  installed: false,
+  path: "-",
+  downloading: false,
+};
+
+const initialProgress: AegisProgressStatus = {
+  active: false,
 };
 
 const emptyCounts = {
@@ -109,10 +121,13 @@ const modelHints: Record<string, string> = {
 export default function App() {
   const [status, setStatus] = useState<AegisStatus>(initialStatus);
   const [assets, setAssets] = useState<AegisAssetsStatus>(initialAssets);
+  const [runtime, setRuntime] = useState<AegisRuntimeStatus>(initialRuntime);
+  const [progress, setProgress] = useState<AegisProgressStatus>(initialProgress);
   const [setup, setSetup] = useState<AegisSetupStatus>(initialSetup);
   const [logs, setLogs] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [assetsBusy, setAssetsBusy] = useState(false);
+  const [runtimeBusy, setRuntimeBusy] = useState(false);
   const [onboardBusy, setOnboardBusy] = useState(false);
   const [onboardError, setOnboardError] = useState<string | null>(null);
   const [providerBusy, setProviderBusy] = useState(false);
@@ -136,6 +151,7 @@ export default function App() {
   const [modelCatalog, setModelCatalog] = useState<AegisModelChoice[]>([]);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [step, setStep] = useState(0);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [form, setForm] = useState<OnboardFormState>({
     acceptRisk: false,
     provider: "openai",
@@ -167,6 +183,16 @@ export default function App() {
         setAssets(next);
       }
     });
+    window.aegis.runtimeStatus().then((next) => {
+      if (mounted) {
+        setRuntime(next);
+      }
+    });
+    window.aegis.progressStatus().then((next) => {
+      if (mounted) {
+        setProgress(next);
+      }
+    });
     window.aegis.setupStatus().then((next) => {
       if (mounted) {
         setSetup(next);
@@ -193,10 +219,19 @@ export default function App() {
     const unsubscribeAssets = window.aegis.onAssetsStatus((next) => {
       setAssets(next);
     });
+    const unsubscribeRuntime = window.aegis.onRuntimeStatus((next) => {
+      setRuntime(next);
+      setRuntimeError(next.lastError ?? null);
+    });
+    const unsubscribeProgress = window.aegis.onProgress((next) => {
+      setProgress(next);
+    });
     return () => {
       mounted = false;
       unsubscribe();
       unsubscribeAssets();
+      unsubscribeRuntime();
+      unsubscribeProgress();
     };
   }, [bridgeReady]);
 
@@ -366,6 +401,19 @@ export default function App() {
     }
   };
 
+  const handleDownloadRuntime = async () => {
+    setRuntimeBusy(true);
+    setRuntimeError(null);
+    try {
+      const result = await window.aegis.downloadRuntime({ method: "git" });
+      if (!result.started && result.message) {
+        setRuntimeError(result.message);
+      }
+    } finally {
+      setRuntimeBusy(false);
+    }
+  };
+
   const handleOpenLog = async () => {
     await window.aegis.openLog();
   };
@@ -469,11 +517,115 @@ export default function App() {
   const activeCounts =
     metricsView === "session" ? metrics.session ?? emptyCounts : metrics.lifetime ?? emptyCounts;
 
+  const activeProgress = useMemo<AegisProgressStatus>(() => {
+    if (progress.active) {
+      return progress;
+    }
+    if (runtime.downloading || runtimeBusy) {
+      return {
+        active: true,
+        task: "runtime",
+        message: "Installing OpenClaw runtime...",
+      };
+    }
+    if (onboardBusy) {
+      return {
+        active: true,
+        task: "onboard",
+        message: "Running onboarding...",
+      };
+    }
+    if (assets.playwright.downloading || assetsBusy) {
+      return {
+        active: true,
+        task: "assets",
+        message: "Downloading browser assets...",
+      };
+    }
+    return { active: false };
+  }, [progress, runtime.downloading, runtimeBusy, onboardBusy, assets.playwright.downloading, assetsBusy]);
+
+  const progressLabel = useMemo(() => {
+    if (!activeProgress.task) {
+      return "Working";
+    }
+    const labels: Record<NonNullable<AegisProgressStatus["task"]>, string> = {
+      runtime: "Runtime",
+      onboard: "Onboarding",
+      assets: "Assets",
+    };
+    return labels[activeProgress.task];
+  }, [activeProgress.task]);
+
+  const runtimeReady = runtime.installed;
+
   const stepBlocked =
     (step === 0 && !form.acceptRisk) ||
     (step === 1 && form.provider !== "skip" && !form.apiKey.trim()) ||
     (step === 2 && !form.model.trim()) ||
-    (step === 4 && !form.gatewayToken.trim());
+    (step === 4 && (!form.gatewayToken.trim() || !runtimeReady || runtime.downloading));
+
+  const progressPanel = activeProgress.active ? (
+    <section className="panel progress-panel">
+      <div className="panel-title">{progressLabel} Progress</div>
+      <div className="progress-copy">{activeProgress.message ?? "Working..."}</div>
+      <div className="progress-track">
+        {typeof activeProgress.value === "number" ? (
+          <div
+            className="progress-fill"
+            style={{ width: `${Math.max(0, Math.min(100, activeProgress.value))}%` }}
+          />
+        ) : (
+          <div className="progress-fill indeterminate" />
+        )}
+      </div>
+      {typeof activeProgress.value === "number" && (
+        <div className="progress-meta">{Math.round(activeProgress.value)}%</div>
+      )}
+    </section>
+  ) : null;
+
+  const runtimePanel = (
+    <section className="panel">
+      <div className="panel-title">OpenClaw Runtime</div>
+      <p className="muted">
+        OpenClaw is automatically installed on first run using the official installer script.
+        You can re-run the installer here.
+      </p>
+      {!runtime.installed && (
+        <div className="assets-callout">
+          <div className="assets-callout-title">OpenClaw runtime not installed.</div>
+          <div className="assets-callout-body">
+            Installation will start automatically. You can also click Install to retry.
+          </div>
+        </div>
+      )}
+      <p className="muted">Install source: GitHub (`openclaw/openclaw`, git mode).</p>
+      <div className="buttons">
+        <button
+          className="primary"
+          onClick={handleDownloadRuntime}
+          disabled={runtimeBusy || runtime.downloading}
+        >
+          {runtime.downloading
+            ? "Installing..."
+            : runtime.installed
+              ? "Reinstall OpenClaw"
+              : "Install OpenClaw"}
+        </button>
+      </div>
+      <div className="status-grid">
+        <div>Installed: {runtime.installed ? "yes" : "no"}</div>
+        <div>Runtime Path: {runtime.path}</div>
+        <div>Method: {runtime.method ?? "git"}</div>
+        <div>Installed At: {runtime.installedAt ?? "-"}</div>
+      </div>
+      {runtime.lastError && (
+        <div className="assets-error">Runtime error: {runtime.lastError}</div>
+      )}
+      {runtimeError && <div className="assets-error">Runtime error: {runtimeError}</div>}
+    </section>
+  );
 
   if (!bridgeReady) {
     return (
@@ -498,15 +650,19 @@ export default function App() {
   if (!setup.onboardingComplete) {
     return (
       <div className="app">
-        <header className="header">
-          <div>
-            <h1>Projekt Aegis</h1>
-            <p>Production-ready OpenClaw deployment &amp; sandbox</p>
-          </div>
-        </header>
+      <header className="header">
+        <div>
+          <h1>Projekt Aegis</h1>
+          <p>Production-ready OpenClaw deployment &amp; sandbox</p>
+        </div>
+      </header>
 
-        <section className="panel">
-          <div className="panel-title">Setup Wizard</div>
+      {progressPanel}
+
+      {runtimePanel}
+
+      <section className="panel">
+        <div className="panel-title">Setup Wizard</div>
           <div className="wizard-steps">
             {["Acknowledge", "Provider", "Model", "Communication", "Access"].map((label, idx) => (
               <div key={label} className={`wizard-step ${step === idx ? "active" : ""}`}>
@@ -654,6 +810,11 @@ export default function App() {
             </div>
           )}
 
+          {!runtimeReady && step === 4 && (
+            <div className="assets-error">
+              Download the OpenClaw runtime before completing setup.
+            </div>
+          )}
           {onboardError && <div className="assets-error">Setup failed: {onboardError}</div>}
 
           <div className="wizard-actions">
@@ -706,10 +867,16 @@ export default function App() {
         </div>
       </header>
 
+      {progressPanel}
+
       <section className="panel">
         <div className="panel-title">Control</div>
         <div className="buttons">
-          <button className="primary" onClick={handleStart} disabled={busy || status.running}>
+          <button
+            className="primary"
+            onClick={handleStart}
+            disabled={busy || status.running || !runtime.installed || runtime.downloading}
+          >
             Start
           </button>
           <button className="ghost" onClick={handleStop} disabled={busy || !status.running}>
@@ -727,6 +894,7 @@ export default function App() {
           <div>Controller: {status.controllerRunning ? "online" : "offline"}</div>
           <div>OpenClaw: {status.openclawRunning ? "online" : "offline"}</div>
           <div>Gateway Port: {status.gatewayPort ?? "-"}</div>
+          <div>Runtime: {runtime.installed ? "installed" : "missing"}</div>
         </div>
       </section>
 
@@ -739,6 +907,8 @@ export default function App() {
           <div>Dashboard URL: {setup.dashboardUrl ?? "-"}</div>
         </div>
       </section>
+
+      {runtimePanel}
 
       <section className="panel">
         <div className="panel-title">Policy File</div>
@@ -903,11 +1073,16 @@ export default function App() {
               <button
                 className="primary"
                 onClick={handleDownloadAssets}
-                disabled={assetsBusy || assets.playwright.downloading}
+                disabled={assetsBusy || assets.playwright.downloading || !runtime.installed}
               >
                 {assets.playwright.downloading ? "Downloading..." : "Download Browser Assets"}
               </button>
             </div>
+            {!runtime.installed && (
+              <div className="assets-callout-body">
+                Install the OpenClaw runtime first to enable browser downloads.
+              </div>
+            )}
           </div>
         )}
         {assets.playwright.installed && (
@@ -916,7 +1091,7 @@ export default function App() {
             <button
               className="ghost"
               onClick={handleDownloadAssets}
-              disabled={assetsBusy || assets.playwright.downloading}
+              disabled={assetsBusy || assets.playwright.downloading || !runtime.installed}
             >
               {assets.playwright.downloading ? "Downloading..." : "Re-download"}
             </button>

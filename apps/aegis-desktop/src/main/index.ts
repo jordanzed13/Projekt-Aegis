@@ -16,6 +16,9 @@ type AegisSettings = {
   communication?: "web" | "messaging";
   policyFileEnabled?: boolean;
   policyFilePath?: string;
+  runtimeInstallMethod?: "git" | "npm";
+  runtimeInstalledAt?: string;
+  runtimeInstalledPath?: string;
 };
 
 type AegisSetupStatus = {
@@ -55,6 +58,31 @@ type PolicyStatus = PolicySettings & {
   workspaceRoot?: string;
 };
 
+type AegisRuntimeStatus = {
+  installed: boolean;
+  path: string;
+  downloading: boolean;
+  lastError?: string;
+  method?: "git" | "npm";
+  installedAt?: string;
+};
+
+type AegisRuntimeInstallRequest = {
+  method?: "git" | "npm";
+};
+
+type OpenClawLaunchTarget =
+  | { mode: "entry"; entry: string }
+  | { mode: "cmd"; cmd: string }
+  | { mode: "none"; error: string };
+
+type AegisProgressStatus = {
+  active: boolean;
+  task?: "runtime" | "onboard" | "assets";
+  message?: string;
+  value?: number;
+};
+
 type MigrationReport = {
   migrated: boolean;
   entries: string[];
@@ -68,10 +96,15 @@ let mainWindow: BrowserWindow | null = null;
 let openclawProcess: ChildProcessWithoutNullStreams | null = null;
 let controllerProcess: ChildProcessWithoutNullStreams | null = null;
 let assetsDownloadProcess: ChildProcessWithoutNullStreams | null = null;
+let runtimeInstallProcess: ChildProcessWithoutNullStreams | null = null;
 let gatewayToken = "";
 let gatewayPort = 18789;
 let controllerPort = 18799;
 let assetsLastError: string | null = null;
+let runtimeDownloading = false;
+let runtimeLastError: string | null = null;
+let progressStatus: AegisProgressStatus = { active: false };
+let progressClearTimer: NodeJS.Timeout | null = null;
 let settings: AegisSettings = { onboardingComplete: false };
 
 const isDev = Boolean(process.env.ELECTRON_RENDERER_URL);
@@ -79,6 +112,7 @@ const isDev = Boolean(process.env.ELECTRON_RENDERER_URL);
 const getRepoRoot = () => process.cwd();
 
 const resolveAegisDataDir = () => path.join(app.getPath("appData"), "Projekt Aegis");
+const resolveRoamingDir = () => app.getPath("appData");
 
 const resolveSettingsPath = () =>
   path.join(resolveAegisDataDir(), "aegis-settings.json");
@@ -95,6 +129,13 @@ const loadSettings = async (): Promise<AegisSettings> => {
       communication: parsed.communication,
       policyFileEnabled: parsed.policyFileEnabled,
       policyFilePath: parsed.policyFilePath,
+      runtimeInstallMethod:
+        parsed.runtimeInstallMethod === "git" || parsed.runtimeInstallMethod === "npm"
+          ? parsed.runtimeInstallMethod
+          : undefined,
+      runtimeInstalledAt: parsed.runtimeInstalledAt,
+      runtimeInstalledPath:
+        typeof parsed.runtimeInstalledPath === "string" ? parsed.runtimeInstalledPath : undefined,
     };
   } catch {
     return { onboardingComplete: false };
@@ -111,6 +152,11 @@ const resolveOpenClawConfigPath = () => path.join(resolveAegisDataDir(), "opencl
 const resolveOpenClawStateDir = () => path.join(resolveAegisDataDir(), "openclaw-state");
 const resolveWorkspaceDir = () => path.join(resolveAegisDataDir(), "workspace");
 const resolveAegisLogsDir = () => path.join(resolveAegisDataDir(), "logs");
+const resolveManagedRuntimePrefix = () => path.join(resolveAegisDataDir(), "runtime", "npm-global");
+const resolveManagedOpenClawRoot = () =>
+  path.join(resolveManagedRuntimePrefix(), "node_modules", "openclaw");
+const resolveRuntimeRoot = () => path.join(resolveAegisDataDir(), "runtime", "openclaw");
+const resolveBundledOpenClawRoot = () => path.join(process.resourcesPath, "openclaw");
 const padNumber = (value: number, size = 2) => String(value).padStart(size, "0");
 const formatLogTimestamp = (date = new Date()) => {
   const year = date.getUTCFullYear();
@@ -414,19 +460,64 @@ const resolveNodePath = () => {
   return path.join(process.resourcesPath, "node", "node.exe");
 };
 
-const resolveOpenClawEntry = () => {
-  if (isDev) {
-    return path.resolve(getRepoRoot(), "openclaw", "openclaw.mjs");
+const resolveNpmCliPath = () => {
+  const nodePath = resolveNodePath();
+  const nodeDir = path.dirname(nodePath);
+  const candidates = [
+    path.join(nodeDir, "node_modules", "npm", "bin", "npm-cli.js"),
+    path.join(nodeDir, "node_modules", "npm", "bin", "npm-cli.cjs"),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
   }
-  return path.join(process.resourcesPath, "openclaw", "openclaw.mjs");
+  return null;
+};
+
+const resolveCmdExecutable = () => {
+  const comSpec = process.env.ComSpec;
+  if (comSpec && existsSync(comSpec)) {
+    return comSpec;
+  }
+  const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
+  return path.join(systemRoot, "System32", "cmd.exe");
 };
 
 const resolveOpenClawRoot = () => {
   if (isDev) {
     return path.resolve(getRepoRoot(), "openclaw");
   }
-  return path.join(process.resourcesPath, "openclaw");
+  const installedRoot = findOpenClawRoot();
+  if (installedRoot) {
+    return installedRoot;
+  }
+  return resolveBundledOpenClawRoot();
 };
+
+const resolveOpenClawWorkingDir = (launch?: OpenClawLaunchTarget) => {
+  const installedRoot = findOpenClawRoot();
+  if (installedRoot && existsSync(installedRoot)) {
+    return installedRoot;
+  }
+  if (launch?.mode === "cmd") {
+    const wrapperDir = path.dirname(launch.cmd);
+    if (existsSync(wrapperDir)) {
+      return wrapperDir;
+    }
+  }
+  const bundledRoot = resolveBundledOpenClawRoot();
+  if (existsSync(bundledRoot)) {
+    return bundledRoot;
+  }
+  const runtimeRoot = resolveRuntimeRoot();
+  if (existsSync(runtimeRoot)) {
+    return runtimeRoot;
+  }
+  return resolveAegisDataDir();
+};
+
+const resolveOpenClawEntry = () => path.join(resolveOpenClawRoot(), "openclaw.mjs");
 
 const resolveOpenClawExtensionsDir = () => path.join(resolveOpenClawRoot(), "extensions");
 let cachedChannelPluginIds: string[] | null = null;
@@ -491,11 +582,615 @@ const resolveAssetsRoot = () => path.join(resolveAegisDataDir(), "assets");
 
 const resolvePlaywrightAssetsPath = () => path.join(resolveAssetsRoot(), "playwright-browsers");
 
-const resolvePlaywrightCli = () => {
-  if (isDev) {
-    return path.resolve(getRepoRoot(), "openclaw", "node_modules", "playwright-core", "cli.js");
+const resolvePlaywrightCli = () =>
+  path.join(resolveOpenClawRoot(), "node_modules", "playwright-core", "cli.js");
+const quotePowerShell = (value: string) => `'${value.replace(/'/g, "''")}'`;
+
+const resolveUserBinCandidates = () => {
+  const homeDir = process.env.USERPROFILE || app.getPath("home");
+  const roamingDir = resolveRoamingDir();
+  const candidates = [
+    path.join(roamingDir, "npm"),
+    homeDir ? path.join(homeDir, ".local", "bin") : null,
+  ];
+  return candidates.filter((entry): entry is string => Boolean(entry));
+};
+
+const resolveOpenClawRootCandidates = () => {
+  const roamingDir = resolveRoamingDir();
+  const homeDir = process.env.USERPROFILE || app.getPath("home");
+  const programFiles = process.env.ProgramFiles;
+  const candidates = [
+    resolveManagedOpenClawRoot(),
+    resolveRuntimeRoot(),
+    path.join(roamingDir, "npm", "node_modules", "openclaw"),
+    homeDir ? path.join(homeDir, ".local", "node_modules", "openclaw") : null,
+    homeDir ? path.join(homeDir, "openclaw") : null,
+    programFiles ? path.join(programFiles, "nodejs", "node_modules", "openclaw") : null,
+  ];
+  return candidates.filter((entry): entry is string => Boolean(entry) && existsSync(entry));
+};
+
+const findOpenClawRoot = () => {
+  for (const candidate of resolveOpenClawRootCandidates()) {
+    if (hasOpenClawBuild(candidate)) {
+      return candidate;
+    }
   }
-  return path.join(process.resourcesPath, "openclaw", "node_modules", "playwright-core", "cli.js");
+  return null;
+};
+
+const hasOpenClawBuild = (root: string) => {
+  if (!existsSync(path.join(root, "openclaw.mjs"))) {
+    return false;
+  }
+  return (
+    existsSync(path.join(root, "dist", "entry.js")) ||
+    existsSync(path.join(root, "dist", "entry.mjs"))
+  );
+};
+
+const resolveOpenClawCmdCandidates = () => {
+  const roamingDir = resolveRoamingDir();
+  const homeDir = process.env.USERPROFILE || app.getPath("home");
+  const programFiles = process.env.ProgramFiles;
+  const programFilesX86 = process.env["ProgramFiles(x86)"];
+  const managedPrefix = resolveManagedRuntimePrefix();
+  const candidates = [
+    path.join(managedPrefix, "openclaw.cmd"),
+    path.join(managedPrefix, "bin", "openclaw.cmd"),
+    path.join(roamingDir, "npm", "openclaw.cmd"),
+    homeDir ? path.join(homeDir, ".local", "bin", "openclaw.cmd") : null,
+    programFiles ? path.join(programFiles, "nodejs", "openclaw.cmd") : null,
+    programFilesX86 ? path.join(programFilesX86, "nodejs", "openclaw.cmd") : null,
+  ];
+  return candidates.filter((entry): entry is string => Boolean(entry) && existsSync(entry));
+};
+
+const resolveConfiguredRuntimeCmd = () => {
+  const configuredPath = settings.runtimeInstalledPath?.trim();
+  if (!configuredPath) {
+    return null;
+  }
+  if (!existsSync(configuredPath)) {
+    return null;
+  }
+  const ext = path.extname(configuredPath).toLowerCase();
+  return ext === ".cmd" || ext === ".bat" ? configuredPath : null;
+};
+
+const isWrapperBackedByValidEntry = (cmdPath: string) => {
+  try {
+    const raw = readFileSync(cmdPath, "utf8");
+    const match = raw.match(/node\s+"([^"]+)"/i);
+    if (!match) {
+      return true;
+    }
+    const target = match[1].replace(/\\\\/g, "\\");
+    if (!existsSync(target)) {
+      return false;
+    }
+    const normalized = target.toLowerCase().replace(/\//g, "\\");
+    if (!normalized.endsWith("\\dist\\entry.js") && !normalized.endsWith("\\dist\\entry.mjs")) {
+      return true;
+    }
+    const root = path.dirname(path.dirname(target));
+    return hasOpenClawBuild(root);
+  } catch {
+    return false;
+  }
+};
+
+const resolveHealthyOpenClawCmd = async (extraPath?: string) => {
+  const configuredCmd = resolveConfiguredRuntimeCmd();
+  if (configuredCmd && (await checkOpenClawCmdHealthy(configuredCmd, extraPath))) {
+    return configuredCmd;
+  }
+  for (const candidate of resolveOpenClawCmdCandidates()) {
+    if (await checkOpenClawCmdHealthy(candidate, extraPath)) {
+      return candidate;
+    }
+  }
+  return null;
+};
+
+const runOpenClawProbe = (command: string, args: string[], extraPath?: string) =>
+  new Promise<boolean>((resolve) => {
+    const proc = spawn(resolveCmdExecutable(), ["/c", command, ...args], {
+      windowsHide: true,
+      env: withExtraPath(extraPath),
+    });
+    proc.on("error", () => resolve(false));
+    proc.on("exit", (code) => resolve(code === 0));
+  });
+
+const checkOpenClawCmdHealthy = async (cmdPath: string, extraPath?: string) => {
+  if (!isWrapperBackedByValidEntry(cmdPath)) {
+    return false;
+  }
+  const probes = [
+    ["--version"],
+    ["version"],
+    ["--help"],
+  ];
+  for (const probe of probes) {
+    if (await runOpenClawProbe(cmdPath, probe, extraPath)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const checkOpenClawPathHealthy = async (extraPath?: string) => {
+  const probes = [
+    ["--version"],
+    ["version"],
+    ["--help"],
+  ];
+  for (const probe of probes) {
+    if (await runOpenClawProbe("openclaw", probe, extraPath)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const checkOpenClawCliHealthy = async (extraPath?: string) => {
+  const cmd = await resolveHealthyOpenClawCmd(extraPath);
+  if (cmd) {
+    return true;
+  }
+  return checkOpenClawPathHealthy(extraPath);
+};
+
+const resolveHealthyOpenClawEntry = () => {
+  const root = findOpenClawRoot();
+  if (root && hasOpenClawBuild(root)) {
+    return path.join(root, "openclaw.mjs");
+  }
+  const bundledRoot = resolveBundledOpenClawRoot();
+  if (hasOpenClawBuild(bundledRoot)) {
+    return path.join(bundledRoot, "openclaw.mjs");
+  }
+  return null;
+};
+
+const resolveOpenClawLaunch = async (): Promise<OpenClawLaunchTarget> => {
+  const configuredCmd = resolveConfiguredRuntimeCmd();
+  if (configuredCmd) {
+    if (await checkOpenClawCmdHealthy(configuredCmd)) {
+      return { mode: "cmd" as const, cmd: configuredCmd };
+    }
+    emitLog(`[openclaw] Configured runtime wrapper is unhealthy: ${configuredCmd}`);
+  }
+  const entry = resolveHealthyOpenClawEntry();
+  if (entry) {
+    return { mode: "entry" as const, entry };
+  }
+  const cmd = await resolveHealthyOpenClawCmd();
+  if (cmd) {
+    return { mode: "cmd" as const, cmd };
+  }
+  if (await checkOpenClawPathHealthy()) {
+    return { mode: "cmd" as const, cmd: "openclaw" };
+  }
+  return {
+    mode: "none" as const,
+    error:
+      "OpenClaw runtime is installed but no healthy launcher was found. Reinstall runtime from the Runtime panel.",
+  };
+};
+
+const getRuntimeStatus = async (): Promise<AegisRuntimeStatus> => {
+  const installedRoot = findOpenClawRoot();
+  const healthyCmd = await resolveHealthyOpenClawCmd();
+  const cliHealthy = healthyCmd ? true : await checkOpenClawPathHealthy();
+  const hintedPath =
+    settings.runtimeInstalledPath && existsSync(settings.runtimeInstalledPath)
+      ? settings.runtimeInstalledPath
+      : undefined;
+  return {
+    installed: Boolean(installedRoot || cliHealthy),
+    path:
+      installedRoot ??
+      (cliHealthy ? healthyCmd ?? "openclaw" : hintedPath ?? resolveManagedRuntimePrefix()),
+    downloading: runtimeDownloading,
+    lastError: runtimeLastError ?? undefined,
+    method: settings.runtimeInstallMethod,
+    installedAt: settings.runtimeInstalledAt,
+  };
+};
+
+const emitRuntimeStatus = async () => {
+  if (!mainWindow) {
+    return;
+  }
+  mainWindow.webContents.send("aegis:runtime:status", await getRuntimeStatus());
+};
+
+const emitProgressStatus = () => {
+  if (!mainWindow) {
+    return;
+  }
+  mainWindow.webContents.send("aegis:progress", progressStatus);
+};
+
+const setProgressStatus = (next: AegisProgressStatus) => {
+  if (progressClearTimer) {
+    clearTimeout(progressClearTimer);
+    progressClearTimer = null;
+  }
+  progressStatus = next;
+  emitProgressStatus();
+};
+
+const completeProgressStatus = (task: "runtime" | "onboard" | "assets", message: string) => {
+  setProgressStatus({ active: true, task, message, value: 100 });
+  progressClearTimer = setTimeout(() => {
+    progressClearTimer = null;
+    if (progressStatus.task === task) {
+      progressStatus = { active: false };
+      emitProgressStatus();
+    }
+  }, 1500);
+};
+
+const ensureRuntimeReady = async () => {
+  const status = await getRuntimeStatus();
+  if (status.installed) {
+    return { ok: true };
+  }
+  if (runtimeDownloading) {
+    return { ok: false, error: "OpenClaw is installing. Please wait a moment." };
+  }
+  return {
+    ok: false,
+    error: "OpenClaw is not installed yet. It will install automatically on first run.",
+  };
+};
+
+const withExtraPath = (extraPath?: string) => {
+  const runtimeBins = resolveUserBinCandidates();
+  const entries = [extraPath, ...runtimeBins, process.env.PATH ?? ""]
+    .filter(Boolean)
+    .join(";");
+  return {
+    ...process.env,
+    PATH: entries,
+  };
+};
+
+const checkCommandAvailable = (command: string, extraPath?: string) =>
+  new Promise<boolean>((resolve) => {
+    const proc = spawn(resolveCmdExecutable(), ["/c", "where", command], {
+      windowsHide: true,
+      env: withExtraPath(extraPath),
+    });
+    proc.on("error", () => resolve(false));
+    proc.on("exit", (code) => resolve(code === 0));
+  });
+
+const runSimpleCommand = (command: string, args: string[], extraPath?: string) =>
+  new Promise<{ code: number | null }>((resolve, reject) => {
+    const proc = spawn(command, args, {
+      windowsHide: true,
+      env: withExtraPath(extraPath),
+    });
+    proc.on("error", (err) => reject(err));
+    proc.on("exit", (code) => resolve({ code }));
+  });
+
+const resolveNodeBinCandidates = () => {
+  const programFiles = process.env.ProgramFiles;
+  const programFilesX86 = process.env["ProgramFiles(x86)"];
+  const bundledNode = !isDev ? path.join(process.resourcesPath, "node") : null;
+  const candidates = [
+    bundledNode,
+    programFiles ? path.join(programFiles, "nodejs") : null,
+    programFilesX86 ? path.join(programFilesX86, "nodejs") : null,
+  ];
+  return candidates.filter((entry): entry is string => Boolean(entry) && existsSync(entry));
+};
+
+const resolveGitBinCandidates = () => {
+  const programFiles = process.env.ProgramFiles;
+  const programFilesX86 = process.env["ProgramFiles(x86)"];
+  const localAppData = process.env.LOCALAPPDATA;
+  const candidates = [
+    programFiles ? path.join(programFiles, "Git", "cmd") : null,
+    programFilesX86 ? path.join(programFilesX86, "Git", "cmd") : null,
+    localAppData ? path.join(localAppData, "Programs", "Git", "cmd") : null,
+  ];
+  return candidates.filter((entry): entry is string => Boolean(entry) && existsSync(entry));
+};
+
+const ensureNodeNpmHealthy = async () => {
+  const candidates = resolveNodeBinCandidates();
+  for (const nodeBin of candidates) {
+    const npmOk = await runSimpleCommand(resolveCmdExecutable(), ["/c", "npm", "-v"], nodeBin).then(
+      (result) => result.code === 0,
+      () => false,
+    );
+    if (npmOk) {
+      return { ok: true, extraPath: nodeBin };
+    }
+  }
+  const preferredNodeBin = candidates[0];
+  const hasWinget = await checkCommandAvailable("winget");
+  if (!hasWinget) {
+    return {
+      ok: false,
+      message:
+        "npm is not available and winget is missing. Please install Node.js LTS from nodejs.org.",
+      extraPath: preferredNodeBin,
+    };
+  }
+  emitLog("[runtime] Repairing Node.js/npm via winget...");
+  const installArgs = [
+    "install",
+    "--id",
+    "OpenJS.NodeJS.LTS",
+    "-e",
+    "--silent",
+    "--accept-source-agreements",
+    "--accept-package-agreements",
+    "--disable-interactivity",
+  ];
+  const install = await runSimpleCommand("winget", installArgs).catch(() => ({ code: null }));
+  const refreshedCandidates = resolveNodeBinCandidates();
+  for (const nodeBin of refreshedCandidates) {
+    const npmAfter = await runSimpleCommand(resolveCmdExecutable(), ["/c", "npm", "-v"], nodeBin).then(
+      (result) => result.code === 0,
+      () => false,
+    );
+    if (npmAfter) {
+      return { ok: true, extraPath: nodeBin };
+    }
+  }
+  return {
+    ok: false,
+    message: `Node.js/npm repair failed (winget code ${install.code ?? "unknown"}).`,
+    extraPath: refreshedCandidates[0],
+  };
+};
+
+const ensureGitAvailable = async () => {
+  const gitBin = resolveGitBinCandidates()[0];
+  const gitOk = await checkCommandAvailable("git", gitBin);
+  if (gitOk) {
+    return { ok: true, extraPath: gitBin };
+  }
+  const hasWinget = await checkCommandAvailable("winget");
+  if (!hasWinget) {
+    return {
+      ok: false,
+      message:
+        "Git is required for GitHub install and winget is unavailable. Install Git for Windows and retry.",
+      extraPath: gitBin,
+    };
+  }
+  emitLog("[runtime] Installing Git for Windows via winget...");
+  const installArgs = [
+    "install",
+    "--id",
+    "Git.Git",
+    "-e",
+    "--silent",
+    "--accept-source-agreements",
+    "--accept-package-agreements",
+    "--disable-interactivity",
+  ];
+  const install = await runSimpleCommand("winget", installArgs).catch(() => ({ code: null }));
+  const refreshedGitBin = resolveGitBinCandidates()[0];
+  const gitAfter = await checkCommandAvailable("git", refreshedGitBin);
+  if (gitAfter) {
+    return { ok: true, extraPath: refreshedGitBin };
+  }
+  return {
+    ok: false,
+    message: `Git installation failed (winget code ${install.code ?? "unknown"}).`,
+    extraPath: refreshedGitBin,
+  };
+};
+
+const runManagedNpmInstaller = (extraPath?: string) =>
+  new Promise<{ code: number | null; timedOut: boolean }>((resolve, reject) => {
+    let settled = false;
+    const settle = (result: { code: number | null; timedOut: boolean }) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (hardTimeout) {
+        clearTimeout(hardTimeout);
+      }
+      resolve(result);
+    };
+    const managedPrefix = resolveManagedRuntimePrefix();
+    const npmCli = resolveNpmCliPath();
+    if (npmCli) {
+      runtimeInstallProcess = spawn(
+        resolveNodePath(),
+        [
+          npmCli,
+          "install",
+          "-g",
+          "openclaw@latest",
+          "--prefix",
+          managedPrefix,
+          "--no-audit",
+          "--no-fund",
+        ],
+        {
+          windowsHide: true,
+          env: withExtraPath(extraPath),
+        },
+      );
+    } else {
+      const installArgs = [
+        "/c",
+        "npm",
+        "install",
+        "-g",
+        "openclaw@latest",
+        "--prefix",
+        managedPrefix,
+        "--no-audit",
+        "--no-fund",
+      ];
+      runtimeInstallProcess = spawn(resolveCmdExecutable(), installArgs, {
+        windowsHide: true,
+        env: withExtraPath(extraPath),
+      });
+    }
+    runtimeInstallProcess.stdout.on("data", (data) => emitLog(`[runtime] ${data.toString()}`));
+    runtimeInstallProcess.stderr.on("data", (data) => emitLog(`[runtime] ${data.toString()}`));
+    runtimeInstallProcess.on("error", (err) => {
+      if (hardTimeout) {
+        clearTimeout(hardTimeout);
+      }
+      reject(err);
+    });
+    runtimeInstallProcess.on("exit", (code) => settle({ code, timedOut: false }));
+
+    const hardTimeout = setTimeout(() => {
+      if (!runtimeInstallProcess || settled) {
+        return;
+      }
+      emitLog("[runtime] npm installation timed out. Please retry installation.");
+      runtimeInstallProcess.kill();
+      settle({ code: null, timedOut: true });
+    }, 25 * 60 * 1000);
+  });
+
+const cleanupLegacyRuntimeArtifacts = async () => {
+  const legacyRoot = resolveRuntimeRoot();
+  if (existsSync(legacyRoot) && !hasOpenClawBuild(legacyRoot)) {
+    await fs.rm(legacyRoot, { recursive: true, force: true }).catch(() => undefined);
+    emitLog("[runtime] Removed stale legacy runtime checkout.");
+  }
+  const homeDir = process.env.USERPROFILE || app.getPath("home");
+  const legacyWrappers = [
+    homeDir ? path.join(homeDir, ".local", "bin", "openclaw.cmd") : null,
+    path.join(resolveRoamingDir(), "npm", "openclaw.cmd"),
+  ].filter((entry): entry is string => Boolean(entry) && existsSync(entry));
+  for (const wrapper of legacyWrappers) {
+    if (!isWrapperBackedByValidEntry(wrapper)) {
+      await fs.rm(wrapper, { force: true }).catch(() => undefined);
+      emitLog(`[runtime] Removed stale wrapper: ${wrapper}`);
+    }
+  }
+};
+
+const installOpenClaw = async (payload: AegisRuntimeInstallRequest) => {
+  if (runtimeDownloading) {
+    return { started: false, message: "OpenClaw install already in progress." };
+  }
+  runtimeDownloading = true;
+  runtimeLastError = null;
+  setProgressStatus({
+    active: true,
+    task: "runtime",
+    message: "Preparing OpenClaw runtime installation...",
+    value: 5,
+  });
+  void emitRuntimeStatus();
+  emitLog("[runtime] Installing OpenClaw...");
+
+  const requestedMethod = payload.method ?? "git";
+  const method: "npm" = "npm";
+  await saveSettings({ ...settings, runtimeInstallMethod: method });
+
+  const finalize = async (ok: boolean, errorMessage?: string) => {
+    runtimeDownloading = false;
+    runtimeInstallProcess = null;
+    if (ok) {
+      const installedRoot = findOpenClawRoot();
+      const healthyCmd = await resolveHealthyOpenClawCmd();
+      const cliHealthy = healthyCmd ? true : await checkOpenClawPathHealthy();
+      const fallbackCmd = resolveOpenClawCmdCandidates()[0];
+      const runtimePath =
+        installedRoot ??
+        (cliHealthy ? healthyCmd ?? "openclaw" : fallbackCmd ?? settings.runtimeInstalledPath ?? "openclaw");
+      await saveSettings({
+        ...settings,
+        runtimeInstallMethod: method,
+        runtimeInstalledAt: new Date().toISOString(),
+        runtimeInstalledPath: runtimePath,
+      });
+      emitLog(`[runtime] OpenClaw installed at ${runtimePath}`);
+      completeProgressStatus("runtime", "OpenClaw runtime installed.");
+    } else if (errorMessage) {
+      runtimeLastError = errorMessage;
+      emitLog(`[runtime] Install failed: ${errorMessage}`);
+      setProgressStatus({
+        active: false,
+        task: "runtime",
+        message: errorMessage,
+      });
+    }
+    void emitRuntimeStatus();
+  };
+
+  try {
+    setProgressStatus({
+      active: true,
+      task: "runtime",
+      message: "Checking Node.js and npm...",
+      value: 15,
+    });
+    const nodeCheck = await ensureNodeNpmHealthy();
+    if (!nodeCheck.ok) {
+      await finalize(false, nodeCheck.message);
+      return { started: false, message: nodeCheck.message };
+    }
+
+    let extraPath = nodeCheck.extraPath;
+    setProgressStatus({
+      active: true,
+      task: "runtime",
+      message: "Preparing managed OpenClaw runtime...",
+      value: 30,
+    });
+    await cleanupLegacyRuntimeArtifacts();
+    emitLog(
+      `[runtime] Install method: ${requestedMethod} (using managed npm runtime for reliability)`,
+    );
+    setProgressStatus({
+      active: true,
+      task: "runtime",
+      message: "Installing OpenClaw runtime package...",
+      value: 50,
+    });
+    const npmResult = await runManagedNpmInstaller(extraPath);
+    if (npmResult.code === 0 && (findOpenClawRoot() || (await checkOpenClawCliHealthy(extraPath)))) {
+      await finalize(true);
+      return { started: true };
+    }
+    if (npmResult.timedOut) {
+      await finalize(false, "Installer timed out before completion. Please retry.");
+      return { started: false, message: runtimeLastError ?? "OpenClaw install timed out." };
+    }
+    await finalize(
+      false,
+      `Installer failed (npm code ${npmResult.code ?? "unknown"}).`,
+    );
+    return { started: false, message: runtimeLastError ?? "OpenClaw install failed." };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await finalize(false, message);
+    return { started: false, message };
+  }
+};
+
+const maybeAutoInstallOpenClaw = async () => {
+  if (isDev) {
+    return;
+  }
+  const status = await getRuntimeStatus();
+  if (!status.installed && !runtimeDownloading) {
+    void installOpenClaw({ method: "git" });
+  }
 };
 
 const getAssetsStatus = async () => {
@@ -659,6 +1354,11 @@ const startOpenClaw = async () => {
   if (openclawProcess) {
     return;
   }
+  const runtimeReady = await ensureRuntimeReady();
+  if (!runtimeReady.ok) {
+    emitLog(`[system] ${runtimeReady.error}`);
+    return;
+  }
   await ensureGatewayToken();
   const playwrightPath = resolvePlaywrightAssetsPath();
   const stateDir = resolveOpenClawStateDir();
@@ -667,22 +1367,45 @@ const startOpenClaw = async () => {
   await fs.mkdir(stateDir, { recursive: true });
   await writeOpenClawConfig(configPath, controllerUrl);
 
-  const openclawEntry = resolveOpenClawEntry();
+  const launch = await resolveOpenClawLaunch();
+  if (launch.mode === "none") {
+    runtimeLastError = launch.error;
+    emitLog(`[openclaw] ${launch.error}`);
+    void emitRuntimeStatus();
+    return;
+  }
+  const workingDir = resolveOpenClawWorkingDir(launch);
   const nodePath = resolveNodePath();
-  openclawProcess = spawn(nodePath, [openclawEntry, "gateway"], {
-    cwd: resolveOpenClawRoot(),
-    env: {
-      ...process.env,
-      OPENCLAW_STATE_DIR: stateDir,
-      OPENCLAW_GATEWAY_TOKEN: gatewayToken,
-      OPENCLAW_CONFIG_PATH: configPath,
-      PLAYWRIGHT_BROWSERS_PATH: playwrightPath,
-    },
-  });
+  const baseEnv = {
+    ...process.env,
+    OPENCLAW_STATE_DIR: stateDir,
+    OPENCLAW_GATEWAY_TOKEN: gatewayToken,
+    OPENCLAW_CONFIG_PATH: configPath,
+    PLAYWRIGHT_BROWSERS_PATH: playwrightPath,
+  };
+  if (launch.mode === "cmd") {
+    emitLog(`[openclaw] Launching via CLI: ${launch.cmd} (cwd: ${workingDir})`);
+    openclawProcess = spawn(resolveCmdExecutable(), ["/c", launch.cmd, "gateway"], {
+      cwd: workingDir,
+      env: baseEnv,
+    });
+  } else {
+    emitLog(`[openclaw] Launching via entry: ${launch.entry} (cwd: ${workingDir})`);
+    openclawProcess = spawn(nodePath, [launch.entry, "gateway"], {
+      cwd: workingDir,
+      env: baseEnv,
+    });
+  }
 
+  openclawProcess.on("error", (err) => {
+    const message = err instanceof Error ? err.message : String(err);
+    emitLog(`[openclaw] process error: ${message}`);
+    openclawProcess = null;
+  });
   openclawProcess.stdout.on("data", (data) => emitLog(`[openclaw] ${data.toString()}`));
   openclawProcess.stderr.on("data", (data) => emitLog(`[openclaw] ${data.toString()}`));
-  openclawProcess.on("exit", () => {
+  openclawProcess.on("exit", (code, signal) => {
+    emitLog(`[openclaw] process exited (code ${code ?? "null"}, signal ${signal ?? "none"})`);
     openclawProcess = null;
   });
 };
@@ -715,9 +1438,15 @@ const startController = async () => {
     },
   });
 
+  controllerProcess.on("error", (err) => {
+    const message = err instanceof Error ? err.message : String(err);
+    emitLog(`[controller] process error: ${message}`);
+    controllerProcess = null;
+  });
   controllerProcess.stdout.on("data", (data) => emitLog(`[controller] ${data.toString()}`));
   controllerProcess.stderr.on("data", (data) => emitLog(`[controller] ${data.toString()}`));
-  controllerProcess.on("exit", () => {
+  controllerProcess.on("exit", (code, signal) => {
+    emitLog(`[controller] process exited (code ${code ?? "null"}, signal ${signal ?? "none"})`);
     controllerProcess = null;
   });
 };
@@ -781,15 +1510,30 @@ const getSetupStatus = async (): Promise<AegisSetupStatus> => {
 };
 
 const runOpenClawOnboard = async (payload: OnboardRequest) => {
+  const runtimeReady = await ensureRuntimeReady();
+  if (!runtimeReady.ok) {
+    emitLog(`[onboard] ${runtimeReady.error}`);
+    return { ok: false, error: runtimeReady.error };
+  }
+  setProgressStatus({
+    active: true,
+    task: "onboard",
+    message: "Starting OpenClaw onboarding...",
+    value: 10,
+  });
   const token = payload.gatewayToken?.trim() || settings.gatewayToken || randomUUID();
   gatewayToken = token;
   const nodePath = resolveNodePath();
-  const openclawEntry = resolveOpenClawEntry();
+  const launch = await resolveOpenClawLaunch();
+  if (launch.mode === "none") {
+    setProgressStatus({ active: false, task: "onboard", message: launch.error });
+    return { ok: false, error: launch.error };
+  }
+  const workingDir = resolveOpenClawWorkingDir(launch);
   const configPath = resolveOpenClawConfigPath();
   const stateDir = resolveOpenClawStateDir();
   const workspaceDir = resolveWorkspaceDir();
   const args = [
-    openclawEntry,
     "onboard",
     "--non-interactive",
     "--accept-risk",
@@ -851,17 +1595,45 @@ const runOpenClawOnboard = async (payload: OnboardRequest) => {
   await fs.mkdir(workspaceDir, { recursive: true });
 
   emitLog("[onboard] Starting OpenClaw onboarding...");
+  setProgressStatus({
+    active: true,
+    task: "onboard",
+    message: "Applying onboarding configuration...",
+    value: 35,
+  });
   const result = await new Promise<{ code: number | null }>((resolve, reject) => {
-    const proc = spawn(nodePath, args, {
-      cwd: resolveOpenClawRoot(),
-      env: {
-        ...process.env,
-        OPENCLAW_CONFIG_PATH: configPath,
-        OPENCLAW_STATE_DIR: stateDir,
-        OPENCLAW_GATEWAY_TOKEN: token,
-      },
+    const proc =
+      launch.mode === "cmd"
+        ? spawn(resolveCmdExecutable(), ["/c", launch.cmd, ...args], {
+            cwd: workingDir,
+            env: {
+              ...process.env,
+              OPENCLAW_CONFIG_PATH: configPath,
+              OPENCLAW_STATE_DIR: stateDir,
+              OPENCLAW_GATEWAY_TOKEN: token,
+            },
+          })
+        : spawn(nodePath, [launch.entry, ...args], {
+            cwd: workingDir,
+            env: {
+              ...process.env,
+              OPENCLAW_CONFIG_PATH: configPath,
+              OPENCLAW_STATE_DIR: stateDir,
+              OPENCLAW_GATEWAY_TOKEN: token,
+            },
+          });
+    proc.stdout.on("data", (data) => {
+      const text = data.toString();
+      emitLog(`[onboard] ${text}`);
+      if (text.includes("Updated ")) {
+        setProgressStatus({
+          active: true,
+          task: "onboard",
+          message: "Saving OpenClaw configuration...",
+          value: 75,
+        });
+      }
     });
-    proc.stdout.on("data", (data) => emitLog(`[onboard] ${data.toString()}`));
     proc.stderr.on("data", (data) => emitLog(`[onboard] ${data.toString()}`));
     proc.on("error", (err) => reject(err));
     proc.on("exit", (code) => resolve({ code }));
@@ -871,9 +1643,19 @@ const runOpenClawOnboard = async (payload: OnboardRequest) => {
   });
 
   if ("error" in result && result.error) {
+    setProgressStatus({
+      active: false,
+      task: "onboard",
+      message: result.error,
+    });
     return { ok: false, error: result.error };
   }
   if (result.code !== 0) {
+    setProgressStatus({
+      active: false,
+      task: "onboard",
+      message: `OpenClaw onboarding failed (code ${result.code ?? "unknown"}).`,
+    });
     return { ok: false, error: `OpenClaw onboarding failed (code ${result.code ?? "unknown"}).` };
   }
 
@@ -889,6 +1671,7 @@ const runOpenClawOnboard = async (payload: OnboardRequest) => {
     communication: payload.communication ?? "web",
   });
 
+  completeProgressStatus("onboard", "Onboarding completed.");
   return { ok: true };
 };
 
@@ -1015,6 +1798,12 @@ const downloadPlaywrightAssets = async () => {
     return { started: false, message: assetsLastError };
   }
   await fs.mkdir(browsersPath, { recursive: true });
+  setProgressStatus({
+    active: true,
+    task: "assets",
+    message: "Downloading Playwright Chromium runtime...",
+    value: 10,
+  });
   assetsDownloadProcess = spawn(nodePath, [cliPath, "install", "chromium"], {
     env: {
       ...process.env,
@@ -1022,16 +1811,36 @@ const downloadPlaywrightAssets = async () => {
     },
   });
 
-  assetsDownloadProcess.stdout.on("data", (data) => emitLog(`[assets] ${data.toString()}`));
+  assetsDownloadProcess.stdout.on("data", (data) => {
+    emitLog(`[assets] ${data.toString()}`);
+    setProgressStatus({
+      active: true,
+      task: "assets",
+      message: "Downloading Playwright Chromium runtime...",
+      value: 60,
+    });
+  });
   assetsDownloadProcess.stderr.on("data", (data) => emitLog(`[assets] ${data.toString()}`));
   assetsDownloadProcess.on("error", (err) => {
     assetsLastError = err instanceof Error ? err.message : String(err);
     assetsDownloadProcess = null;
+    setProgressStatus({
+      active: false,
+      task: "assets",
+      message: assetsLastError ?? "Asset download failed.",
+    });
     void emitAssetsStatus();
   });
   assetsDownloadProcess.on("exit", (code) => {
     if (code && code !== 0) {
       assetsLastError = `Playwright browser download failed (code ${code}).`;
+      setProgressStatus({
+        active: false,
+        task: "assets",
+        message: assetsLastError,
+      });
+    } else {
+      completeProgressStatus("assets", "Browser assets downloaded.");
     }
     assetsDownloadProcess = null;
     void emitAssetsStatus();
@@ -1050,12 +1859,27 @@ const getMetrics = async () => {
   }
 };
 
+const fallbackModels = [
+  { id: "openai/gpt-4.1", name: "GPT-4.1", provider: "openai" },
+  { id: "anthropic/claude-sonnet-4-5", name: "Claude Sonnet 4.5", provider: "anthropic" },
+  { id: "openrouter/anthropic/claude-3.7-sonnet", name: "Claude 3.7 Sonnet", provider: "openrouter" },
+  { id: "google/gemini-2.0-flash", name: "Gemini 2.0 Flash", provider: "gemini" },
+  { id: "zai/glm-4.5", name: "GLM 4.5", provider: "zai" },
+  { id: "qwen/qwen2.5-72b-instruct", name: "Qwen 2.5 72B", provider: "qwen" },
+  { id: "minimax/abab-6.5", name: "MiniMax abab 6.5", provider: "minimax" },
+  { id: "moonshot/moonshot-v1-32k", name: "Moonshot V1 32K", provider: "moonshot" },
+  { id: "venice/venice-2.0", name: "Venice 2.0", provider: "venice" },
+];
+
 const getModels = async () => {
+  if (!controllerProcess) {
+    return { ok: true, models: fallbackModels };
+  }
   try {
     return await fetchControllerJson("/models");
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: message, models: [] };
+    return { ok: true, error: message, models: fallbackModels };
   }
 };
 
@@ -1126,6 +1950,7 @@ app.whenReady().then(async () => {
   }
   await ensureSessionLogFile();
   createWindow();
+  emitLog(`[system] Aegis desktop ${app.getVersion()} started`);
 
   if (migration.migrated && migration.entries.length > 0) {
     emitLog(
@@ -1150,6 +1975,11 @@ app.whenReady().then(async () => {
   ipcMain.handle("aegis:setup:status", async () => getSetupStatus());
   ipcMain.handle("aegis:onboard", async (_event, payload: OnboardRequest) => runOnboarding(payload));
   ipcMain.handle("aegis:open-dashboard", async () => openDashboard());
+  ipcMain.handle("aegis:runtime:status", async () => getRuntimeStatus());
+  ipcMain.handle("aegis:runtime:download", async (_event, payload: AegisRuntimeInstallRequest) =>
+    installOpenClaw(payload),
+  );
+  ipcMain.handle("aegis:progress:status", async () => progressStatus);
   ipcMain.handle("aegis:assets:status", async () => getAssetsStatus());
   ipcMain.handle("aegis:assets:download", async () => downloadPlaywrightAssets());
   ipcMain.handle("aegis:update-provider", async (_event, payload: UpdateProviderRequest) =>
@@ -1167,6 +1997,9 @@ app.whenReady().then(async () => {
   ipcMain.handle("aegis:policy:open", async () => openPolicyFile());
   ipcMain.handle("aegis:policy:open-folder", async () => openPolicyFolder());
 
+  void emitRuntimeStatus();
+  emitProgressStatus();
+  void maybeAutoInstallOpenClaw();
   void emitAssetsStatus();
 
   app.on("activate", () => {

@@ -40,3 +40,40 @@
 - Global tools profile forced to `full` so the Aegis exec agent can invoke all core tools.
 - Added local tool execution inside the Aegis controller for `exec`, `read`, `write`, `edit`, `list_dir`, `pwd`, and `whoami` so core filesystem/runtime tools no longer rely on OpenClaw `tools.invoke`.
 - Materialized OpenClaw `node_modules` into real directories for portable builds (avoids missing-module errors when pnpm junctions are lost in ZIP distribution).
+
+## 2026-02-08
+
+- Official alpha release finalized: `v0.1.15`.
+- Alpha release baseline: installer-first flow, managed runtime install, runtime health-gated startup, and stable dashboard launch path.
+- Switched portable builds to auto-install OpenClaw on first run using the official installer script.
+- Added Runtime panel with auto-install status and manual reinstall action.
+- Wired runtime status IPC events so the UI can block onboarding/start until OpenClaw is installed.
+- Added runtime preflight that repairs Node/npm and Git via `winget` before invoking `install.ps1`, removing the automatic fallback to npm when Git is missing.
+- Fixed OpenClaw launch priority to prefer local `openclaw.mjs` entrypoint over global `openclaw.cmd`, preventing `dist/entry.js` module-not-found onboarding failures on some machines.
+- Added fallback model catalog when controller is not yet reachable so onboarding step 3 no longer blocks on transient fetch errors.
+- Tightened runtime validity check: installation now requires both `openclaw.mjs` and `dist/entry.js`.
+- Added automatic installer fallback from git source install to npm package install when git checkout is incomplete (missing build output).
+- Fixed runtime false-negative after successful install: validation now also accepts `openclaw --version` via PATH (not only fixed `.cmd` paths), and launcher can run via PATH-resolved CLI when needed.
+- Fixed runtime detection edge case where a stale first `openclaw.cmd` candidate could block setup even when another wrapper path is healthy; CLI validation now checks all discovered wrappers.
+- Added in-app progress bar for long-running tasks (runtime install, onboarding, browser asset download) with live stage updates.
+- Fixed runtime install completion on machines where installer reports success but process can hang: added installer success markers + idle watchdog finalization and timeout handling.
+- Expanded runtime path detection for global installs (`%APPDATA%/npm` and `%USERPROFILE%/.local`) and persisted detected runtime wrapper path after install.
+- Hardened OpenClaw health checks to probe multiple commands (`--version`, `version`, `--help`) instead of relying on a single flag.
+- Fixed launch routing to prioritize the installed runtime wrapper (`runtimeInstalledPath` / healthy `openclaw.cmd`) before bundled OpenClaw entry, preventing dashboard startup from using stale packaged runtime.
+- Added explicit child-process `error` and detailed `exit` logging for OpenClaw and controller processes to prevent runtime popup crashes and improve diagnosis.
+- Fixed `%APPDATA%` runtime wrapper path resolution regression in startup checks (`Roaming` path was incorrectly resolved), which could cause fallback to bundled OpenClaw and gateway startup failure.
+- Tightened runtime status health: persisted wrapper path now counts as installed only when the wrapper executes successfully.
+- Fixed runtime status gating regression where successful installs could still show `Installed: no`; persisted runtime wrapper path now marks runtime installed when the file exists.
+- Launch now always prefers the persisted installed runtime wrapper path when present, preventing accidental fallback to bundled runtime and disabled Start button.
+- Fixed Windows shell spawn reliability: all command-shell calls now use resolved absolute `ComSpec`/`System32\\cmd.exe` path instead of plain `cmd.exe`, eliminating `spawn cmd.exe ENOENT` startup failures.
+- Fixed OpenClaw launch `cwd` selection for CLI mode: runtime now uses an existing working directory (installed root/wrapper dir/runtime data dir) instead of potentially missing bundled path, preventing false `spawn ... ENOENT` on startup.
+- Added launch log diagnostics to include the exact `cwd` used for OpenClaw gateway/onboarding starts.
+- Fixed stale runtime wrapper handling: configured wrapper is now used only when healthy; otherwise Aegis falls back to other healthy launchers and surfaces a clear runtime error if none exist.
+- Fixed false install success criteria: runtime install no longer treats mere wrapper file presence as success; it now requires a healthy launcher/build before marking completion.
+- Reworked runtime installation to use a managed npm global prefix under `%APPDATA%/Projekt Aegis/runtime/npm-global` instead of relying on `openclaw.ai/install.ps1` execution.
+- Updated launcher resolution to prefer a healthy `openclaw.mjs` entry from detected runtime roots before wrapper-based CLI launch.
+- Hardened runtime status to report installed only when a healthy launcher is actually available, preventing false-positive "Installed: yes" states.
+- Runtime install now runs via bundled `npm-cli.js` (not shell `install.ps1`), removing Git/script execution from the Aegis installer path.
+- Added stale legacy runtime cleanup (`%APPDATA%/Projekt Aegis/runtime/openclaw`) and stale wrapper cleanup (`.local\\bin\\openclaw.cmd`) before managed runtime install.
+- Strengthened wrapper validation: `.cmd` launchers are accepted only if they point to an existing `dist/entry.js` in a valid OpenClaw build.
+- Added startup build log line (`[system] Aegis desktop <version> started`) to make runtime log/version verification unambiguous.

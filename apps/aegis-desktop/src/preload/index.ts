@@ -7,6 +7,9 @@ contextBridge.exposeInMainWorld("aegis", {
   setupStatus: () => ipcRenderer.invoke("aegis:setup:status"),
   onboard: (payload) => ipcRenderer.invoke("aegis:onboard", payload),
   openDashboard: () => ipcRenderer.invoke("aegis:open-dashboard"),
+  runtimeStatus: () => ipcRenderer.invoke("aegis:runtime:status"),
+  downloadRuntime: (payload) => ipcRenderer.invoke("aegis:runtime:download", payload),
+  progressStatus: () => ipcRenderer.invoke("aegis:progress:status"),
   assetsStatus: () => ipcRenderer.invoke("aegis:assets:status"),
   downloadBrowserAssets: () => ipcRenderer.invoke("aegis:assets:download"),
   updateProvider: (payload) => ipcRenderer.invoke("aegis:update-provider", payload),
@@ -28,5 +31,15 @@ contextBridge.exposeInMainWorld("aegis", {
     const listener = (_event, payload) => handler(payload);
     ipcRenderer.on("aegis:assets:status", listener);
     return () => ipcRenderer.removeListener("aegis:assets:status", listener);
+  },
+  onRuntimeStatus: (handler) => {
+    const listener = (_event, payload) => handler(payload);
+    ipcRenderer.on("aegis:runtime:status", listener);
+    return () => ipcRenderer.removeListener("aegis:runtime:status", listener);
+  },
+  onProgress: (handler) => {
+    const listener = (_event, payload) => handler(payload);
+    ipcRenderer.on("aegis:progress", listener);
+    return () => ipcRenderer.removeListener("aegis:progress", listener);
   },
 });

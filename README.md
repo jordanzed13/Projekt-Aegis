@@ -2,6 +2,13 @@
 
 Projekt Aegis is a Windows-first security shell for OpenClaw. It runs OpenClaw locally, routes all tool actions through a sidecar proxy, and enforces RED/YELLOW/GREEN guardrails with audit logging and user approvals.
 
+## Official Alpha
+
+- Release: `v0.1.15` (official alpha)
+- Platform: Windows 10/11
+- Runtime model: Aegis installer + first-run managed OpenClaw runtime install
+- Recommended distribution artifact: `Projekt Aegis Setup 0.1.15.exe`
+
 ## Key Features
 
 - Electron + React control dashboard
@@ -46,6 +53,7 @@ The app will spawn OpenClaw locally and the Aegis controller on first start.
 
 1. Install `ProjektAegis_Setup.exe` (NSIS installer).
 1. Launch Projekt Aegis.
+1. On first launch, Aegis automatically installs OpenClaw into a managed runtime directory.
 1. Complete the first-run setup wizard (risk acknowledgement, provider API key, model, access token).
 1. Click **Start**.
 1. The dashboard will show **Running** and the OpenClaw gateway will bind to `127.0.0.1:18789`.
@@ -65,6 +73,7 @@ The app will spawn OpenClaw locally and the Aegis controller on first start.
 - OpenClaw config: `%APPDATA%/Projekt Aegis/openclaw.json`
 - OpenClaw state: `%APPDATA%/Projekt Aegis/openclaw-state/`
 - OpenClaw workspace: `%APPDATA%/Projekt Aegis/workspace/`
+- OpenClaw runtime prefix (managed npm install): `%APPDATA%/Projekt Aegis/runtime/npm-global/`
 - Aegis audit log (current session): `%APPDATA%/Projekt Aegis/logs/aegis_audit_<UTC timestamp>.jsonl`
 - Aegis audit log archives: `%APPDATA%/Projekt Aegis/logs/Archived_aegis_audit_<UTC timestamp>.jsonl`
 - Aegis metrics: `%APPDATA%/Projekt Aegis/metrics.json`
@@ -75,13 +84,16 @@ The app will spawn OpenClaw locally and the Aegis controller on first start.
 - The OpenClaw gateway is bound to loopback only and requires a token.
 - The proxy tool is provided by the `aegis-proxy` OpenClaw plugin.
 - Playwright browser assets are excluded from the installer and downloaded on first run via the Assets panel.
+- OpenClaw installs automatically via managed npm global install under `%APPDATA%/Projekt Aegis/runtime/npm-global`.
+- Runtime preflight auto-repairs missing Node/npm via `winget` before running the OpenClaw installer.
+- Legacy Git-checkout runtime artifacts are cleaned before managed install to prevent stale wrapper loops.
 - Audit logs rotate at 50 MB by default. The current session log keeps newest events on top; older logs are archived with a timestamped filename.
 - Legacy data in `%APPDATA%/aegis-desktop` is auto-migrated on first run.
 - Policy file overrides can be toggled on/off in the dashboard.
 - Policy file supports JSON (`.json`) or YAML (`.yml`/`.yaml`).
 - Channel plugins are auto-enabled so the OpenClaw dashboard can render channel configuration schemas.
 - Core filesystem/runtime tools (`exec`, `read`, `write`, `edit`, `list_dir`) execute locally inside the Aegis controller; other tools are proxied to OpenClaw.
-- Portable/installer builds materialize OpenClaw `node_modules` so dependencies resolve on machines without pnpm installed.
+- Portable/installer builds do not ship the OpenClaw runtime; it is installed on first run.
 
 ## Build (Production)
 
@@ -92,7 +104,7 @@ npm run build --workspace apps/aegis-desktop
 npm run dist --workspace apps/aegis-desktop
 ```
 
-The installer will include the OpenClaw runtime and Aegis controller bundle.
+The installer bundles the Aegis controller + UI. The OpenClaw runtime is installed at first run.
 
 # Building information
 Author: Prophet Technology Pte. Ltd.

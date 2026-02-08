@@ -56,6 +56,31 @@ export type AegisAssetsDownloadResult = {
   message?: string;
 };
 
+export type AegisRuntimeStatus = {
+  installed: boolean;
+  path: string;
+  downloading: boolean;
+  lastError?: string;
+  method?: "git";
+  installedAt?: string;
+};
+
+export type AegisRuntimeInstallRequest = {
+  method?: "git";
+};
+
+export type AegisRuntimeInstallResult = {
+  started: boolean;
+  message?: string;
+};
+
+export type AegisProgressStatus = {
+  active: boolean;
+  task?: "runtime" | "onboard" | "assets";
+  message?: string;
+  value?: number;
+};
+
 export type AegisAlertCounts = {
   green: number;
   yellow: number;
@@ -113,6 +138,9 @@ declare global {
       onboard: (payload: AegisOnboardRequest) => Promise<AegisOnboardResult>;
       updateProvider: (payload: AegisUpdateProviderRequest) => Promise<AegisUpdateProviderResult>;
       openDashboard: () => Promise<{ url?: string }>;
+      runtimeStatus: () => Promise<AegisRuntimeStatus>;
+      downloadRuntime: (payload: AegisRuntimeInstallRequest) => Promise<AegisRuntimeInstallResult>;
+      progressStatus: () => Promise<AegisProgressStatus>;
       assetsStatus: () => Promise<AegisAssetsStatus>;
       downloadBrowserAssets: () => Promise<AegisAssetsDownloadResult>;
       metrics: () => Promise<AegisMetricsSnapshot>;
@@ -126,6 +154,8 @@ declare global {
       openPolicyFolder: () => Promise<AegisLogPathResult>;
       onLog: (handler: (line: string) => void) => () => void;
       onAssetsStatus: (handler: (status: AegisAssetsStatus) => void) => () => void;
+      onRuntimeStatus: (handler: (status: AegisRuntimeStatus) => void) => () => void;
+      onProgress: (handler: (status: AegisProgressStatus) => void) => () => void;
     };
   }
 }
