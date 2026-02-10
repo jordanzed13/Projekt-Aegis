@@ -817,17 +817,11 @@ const getRuntimeStatus = async (): Promise<AegisRuntimeStatus> => {
 };
 
 const emitRuntimeStatus = async () => {
-  if (!mainWindow) {
-    return;
-  }
-  mainWindow.webContents.send("aegis:runtime:status", await getRuntimeStatus());
+  safeSend("aegis:runtime:status", await getRuntimeStatus());
 };
 
 const emitProgressStatus = () => {
-  if (!mainWindow) {
-    return;
-  }
-  mainWindow.webContents.send("aegis:progress", progressStatus);
+  safeSend("aegis:progress", progressStatus);
 };
 
 const setProgressStatus = (next: AegisProgressStatus) => {
@@ -1228,10 +1222,7 @@ const getAssetsStatus = async () => {
 };
 
 const emitAssetsStatus = async () => {
-  if (!mainWindow) {
-    return;
-  }
-  mainWindow.webContents.send("aegis:assets:status", await getAssetsStatus());
+  safeSend("aegis:assets:status", await getAssetsStatus());
 };
 
 const loadOpenClawConfig = async (configPath: string) => {
@@ -1511,11 +1502,19 @@ const getStatus = () => {
   };
 };
 
-const emitStatus = () => {
-  if (!mainWindow) {
+function safeSend(channel: string, ...args: unknown[]) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
     return;
   }
-  mainWindow.webContents.send("aegis:status:update", getStatus());
+  const wc = mainWindow.webContents;
+  if (!wc || wc.isDestroyed()) {
+    return;
+  }
+  wc.send(channel, ...args);
+}
+
+const emitStatus = () => {
+  safeSend("aegis:status:update", getStatus());
 };
 
 const setOpenclawState = (next: OpenClawState) => {
@@ -1536,9 +1535,6 @@ const fetchControllerJson = async <T = unknown>(pathName: string): Promise<T> =>
 };
 
 const emitLog = (line: string) => {
-  if (!mainWindow) {
-    return;
-  }
   const trimmed = line.trim();
   if (!trimmed) {
     return;
@@ -1546,7 +1542,7 @@ const emitLog = (line: string) => {
   if (trimmed.includes("[controller] Aegis Controller connected to OpenClaw gateway")) {
     setOpenclawState("online");
   }
-  mainWindow.webContents.send("aegis:log", `${new Date().toISOString()} ${trimmed}`);
+  safeSend("aegis:log", `${new Date().toISOString()} ${trimmed}`);
 };
 
 const resolvePreloadPath = () => {

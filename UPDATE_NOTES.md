@@ -107,3 +107,5 @@
 - Added controller ingestion endpoint `POST /audit/lobster` for Lobster workflow audit events, with payload truncation to prevent unbounded log growth.
 - Added `LOBSTER_WORKFLOW` to core audit event types and updated Lobster impact documentation to reflect the monitored-enable approach.
 - Bumped Phase 3 alpha version to `v0.2.2` across workspace packages and desktop release metadata.
+- Fixed packaged OpenClaw launch regression: shipped missing `openclaw.plugin.json` manifest for the bundled `aegis-lobster-guard` gateway extension so OpenClaw config validation passes.
+- Fixed app shutdown crash on window close (`TypeError: Object has been destroyed`) by guarding IPC status/log emits when `BrowserWindow` / `webContents` is already destroyed.

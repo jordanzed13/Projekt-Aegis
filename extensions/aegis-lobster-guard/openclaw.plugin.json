@@ -1,0 +1,17 @@
+{
+  "id": "aegis-lobster-guard",
+  "name": "Aegis Lobster Guard",
+  "description": "Audits Lobster workflows before execution and forwards sanitized events to the Aegis Controller.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "controllerUrl": { "type": "string" }
+    },
+    "required": ["controllerUrl"]
+  },
+  "uiHints": {
+    "controllerUrl": { "label": "Aegis Controller URL" }
+  }
+}
+
