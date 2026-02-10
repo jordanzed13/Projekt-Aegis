@@ -29,3 +29,15 @@ resources/
 
 # Logs
 *.log
+
+# Local secrets (never commit secret material)
+.secrets/*
+!.secrets/.gitkeep
+
+# Local clones (keep out of repo)
+openclaw_new/
+Agentsh/
+AgentShepherd/
+
+# Local machine config
+.npmrc

@@ -1,6 +1,6 @@
 {
   "name": "projekt-aegis",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Projekt Aegis - Secure OpenClaw sidecar sandbox",
   "workspaces": [

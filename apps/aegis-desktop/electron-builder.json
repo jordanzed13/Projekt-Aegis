@@ -41,6 +41,14 @@
       "to": "controller/node_modules/@aegis/core/package.json"
     },
     {
+      "from": "../../src/guides",
+      "to": "guides"
+    },
+    {
+      "from": "../../.secrets",
+      "to": ".secrets"
+    },
+    {
       "from": "../../node_modules/.pnpm/node_modules/zod",
       "to": "controller/node_modules/zod"
     }

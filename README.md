@@ -4,10 +4,10 @@ Projekt Aegis is a Windows-first security shell for OpenClaw. It runs OpenClaw l
 
 ## Official Alpha
 
-- Release: `v0.1.15` (official alpha)
+- Release: `v0.2.1` (official alpha)
 - Platform: Windows 10/11
 - Runtime model: Aegis installer + first-run managed OpenClaw runtime install
-- Recommended distribution artifact: `Projekt Aegis Setup 0.1.15.exe`
+- Recommended distribution artifact: `Projekt Aegis Setup 0.2.1.exe`
 
 ## Key Features
 
@@ -72,12 +72,13 @@ The app will spawn OpenClaw locally and the Aegis controller on first start.
 
 - OpenClaw config: `%APPDATA%/Projekt Aegis/openclaw.json`
 - OpenClaw state: `%APPDATA%/Projekt Aegis/openclaw-state/`
-- OpenClaw workspace: `%APPDATA%/Projekt Aegis/workspace/`
+- OpenClaw workspace: `%USERPROFILE%/Aegis_Workspace/`
 - OpenClaw runtime prefix (managed npm install): `%APPDATA%/Projekt Aegis/runtime/npm-global/`
 - Aegis audit log (current session): `%APPDATA%/Projekt Aegis/logs/aegis_audit_<UTC timestamp>.jsonl`
 - Aegis audit log archives: `%APPDATA%/Projekt Aegis/logs/Archived_aegis_audit_<UTC timestamp>.jsonl`
 - Aegis metrics: `%APPDATA%/Projekt Aegis/metrics.json`
 - Aegis policy file (optional): `%APPDATA%/Projekt Aegis/policy.json`
+- Planned Phase 3 log upload endpoint: `https://api.prophettechnology.org/v1/logs/upload`
 
 ## Notes
 
@@ -105,6 +106,15 @@ npm run dist --workspace apps/aegis-desktop
 ```
 
 The installer bundles the Aegis controller + UI. The OpenClaw runtime is installed at first run.
+
+### Beta Log Upload Key (Installer Bundling)
+
+For Beta testing, the log upload feature reads a bearer key from:
+
+- `.secrets/prophet-upload-api-beta.key` (repo root, gitignored)
+
+If the file exists at build time, `apps/aegis-desktop/electron-builder.json` bundles it into the installer under `resources/.secrets/`.
+The key is never hardcoded in source.
 
 # Building information
 Author: Prophet Technology Pte. Ltd.

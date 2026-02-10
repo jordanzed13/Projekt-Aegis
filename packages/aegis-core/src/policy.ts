@@ -11,7 +11,13 @@ const NETWORK_TOOLS = new Set([
 ]);
 const READ_TOOLS = new Set(["read", "read_file"]);
 const WRITE_TOOLS = new Set(["write", "write_file", "edit", "edit_file"]);
+const DELETE_TOOLS = new Set(["delete", "delete_file", "remove", "remove_file", "unlink"]);
 const EXEC_TOOLS = new Set(["run_shell", "exec"]);
+// Lobster/workflow tools can execute multi-step pipelines (often including shell execution) as a single tool call.
+// Until we have a Lobster-aware parser/enforcer, treat these as high-risk macro tools.
+const HIGH_RISK_MACRO_TOOLS = new Set(["lobster", "workflow_tool"]);
+const DELETE_COMMAND_WORDS = new Set(["rm", "del", "erase", "rmdir", "rd", "remove-item", "unlink"]);
+const DANGEROUS_DELETE_PATTERNS = ["rm -rf", "del /s", "rmdir /s", "rd /s"];
 
 const normalizeValue = (value: string): string => value.toLowerCase();
 
@@ -59,6 +65,62 @@ const isWithinRoots = (candidate: string | null, roots: string[]): boolean => {
     const relative = path.relative(resolvedRoot, resolvedCandidate);
     return !relative || (!relative.startsWith("..") && !path.isAbsolute(relative));
   });
+};
+
+const stripQuotes = (value: string): string => value.replace(/^['"]|['"]$/g, "");
+
+const splitCommandTokens = (command: string) => {
+  const firstSegment = command.split(/&&|\|\||\||;/)[0] ?? command;
+  return firstSegment.match(/"[^"]+"|'[^']+'|\S+/g) ?? [];
+};
+
+const resolveCandidatePath = (candidate: string, workdir?: string): string => {
+  if (!candidate) {
+    return candidate;
+  }
+  if (path.isAbsolute(candidate)) {
+    return candidate;
+  }
+  if (workdir && path.isAbsolute(workdir)) {
+    return path.resolve(workdir, candidate);
+  }
+  return candidate;
+};
+
+const findDeleteTargetInCommand = (command: string, workdir?: string): string | null => {
+  const tokens = splitCommandTokens(command);
+  if (tokens.length === 0) {
+    return null;
+  }
+  for (let idx = 0; idx < tokens.length; idx += 1) {
+    const commandWord = stripQuotes(tokens[idx]).toLowerCase();
+    if (!DELETE_COMMAND_WORDS.has(commandWord)) {
+      continue;
+    }
+    const isWindowsDeleteWord =
+      commandWord === "del" || commandWord === "erase" || commandWord === "rmdir" || commandWord === "rd";
+    for (let argIdx = idx + 1; argIdx < tokens.length; argIdx += 1) {
+      const arg = stripQuotes(tokens[argIdx]);
+      if (!arg) {
+        continue;
+      }
+      if (arg.startsWith("-")) {
+        continue;
+      }
+      if (isWindowsDeleteWord && arg.startsWith("/")) {
+        continue;
+      }
+      return resolveCandidatePath(arg, workdir);
+    }
+  }
+  return null;
+};
+
+const isDeleteCommand = (command: string): boolean => {
+  const normalized = normalizeValue(command);
+  return Array.from(DELETE_COMMAND_WORDS).some((word) =>
+    normalized.includes(`${normalizeValue(word)} `) || normalized.endsWith(normalizeValue(word)),
+  );
 };
 
 const extractHostname = (url: string): string | null => {
@@ -141,10 +203,19 @@ export const decideRisk = (
   history: AuditEntry[],
   policy: PolicyConfig,
 ): PolicyDecision => {
+  if (HIGH_RISK_MACRO_TOOLS.has(req.toolName)) {
+    return {
+      level: "RED",
+      action: "BLOCK_PENDING_APPROVAL",
+      tags: ["macro_tool"],
+      explanation: `High-risk macro tool detected (${req.toolName}).`,
+    };
+  }
+
   const tags: string[] = [];
   const pathArg = extractPathArg(req);
 
-  if (READ_TOOLS.has(req.toolName) || WRITE_TOOLS.has(req.toolName)) {
+  if (READ_TOOLS.has(req.toolName) || WRITE_TOOLS.has(req.toolName) || DELETE_TOOLS.has(req.toolName)) {
     const targetPath = String(pathArg ?? "");
     if (targetPath && containsAny(targetPath, policy.sensitiveFiles)) {
       return {
@@ -157,17 +228,45 @@ export const decideRisk = (
     if (WRITE_TOOLS.has(req.toolName) && pathArg && !isWithinRoots(pathArg, policy.workspaceRoots)) {
       tags.push("outside_workspace_write");
     }
+    if (DELETE_TOOLS.has(req.toolName) && pathArg && !isWithinRoots(pathArg, policy.workspaceRoots)) {
+      return {
+        level: "RED",
+        action: "BLOCK_PENDING_APPROVAL",
+        tags: ["outside_workspace_delete"],
+        explanation: "Delete attempt outside approved workspace.",
+      };
+    }
   }
 
   if (EXEC_TOOLS.has(req.toolName)) {
     const command = String(req.toolArgs.command ?? "");
-    if (containsAny(command, policy.dangerousCommands)) {
+    const workdir = typeof req.toolArgs.workdir === "string" ? req.toolArgs.workdir : undefined;
+    const deleteCommand = isDeleteCommand(command);
+    const deleteTarget = deleteCommand ? findDeleteTargetInCommand(command, workdir) : null;
+    const workspaceDeleteAllowed = Boolean(deleteTarget && isWithinRoots(deleteTarget, policy.workspaceRoots));
+
+    if (deleteCommand && !workspaceDeleteAllowed) {
       return {
         level: "RED",
         action: "BLOCK_PENDING_APPROVAL",
-        tags: ["dangerous_command"],
-        explanation: "Dangerous command detected.",
+        tags: ["outside_workspace_delete"],
+        explanation: "Delete intent outside approved workspace.",
       };
+    }
+
+    if (containsAny(command, policy.dangerousCommands)) {
+      const dangerousDeleteOnly =
+        workspaceDeleteAllowed && containsAny(command, DANGEROUS_DELETE_PATTERNS);
+      if (dangerousDeleteOnly) {
+        // workspace-local delete operations are allowed without extra prompts
+      } else {
+        return {
+          level: "RED",
+          action: "BLOCK_PENDING_APPROVAL",
+          tags: ["dangerous_command"],
+          explanation: "Dangerous command detected.",
+        };
+      }
     }
     const env = extractExecEnv(req);
     if (env) {
@@ -188,10 +287,6 @@ export const decideRisk = (
           tags.push("sensitive_env");
         }
       }
-    }
-    const workdir = req.toolArgs.workdir;
-    if (typeof workdir === "string" && workdir && !isWithinRoots(workdir, policy.workspaceRoots)) {
-      tags.push("exec_outside_workspace");
     }
   }
 

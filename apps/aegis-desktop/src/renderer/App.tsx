@@ -16,6 +16,7 @@ const initialStatus: AegisStatus = {
   running: false,
   controllerRunning: false,
   openclawRunning: false,
+  openclawState: "offline",
 };
 
 const initialAssets: AegisAssetsStatus = {
@@ -152,6 +153,9 @@ export default function App() {
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [step, setStep] = useState(0);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
+  const [helpActionBusy, setHelpActionBusy] = useState(false);
+  const [helpMessage, setHelpMessage] = useState<string | null>(null);
+  const [helpError, setHelpError] = useState<string | null>(null);
   const [form, setForm] = useState<OnboardFormState>({
     acceptRisk: false,
     provider: "openai",
@@ -216,6 +220,9 @@ export default function App() {
     const unsubscribe = window.aegis.onLog((line) => {
       setLogs((prev) => [line, ...prev].slice(0, 500));
     });
+    const unsubscribeStatus = window.aegis.onStatus((next) => {
+      setStatus(next);
+    });
     const unsubscribeAssets = window.aegis.onAssetsStatus((next) => {
       setAssets(next);
     });
@@ -229,6 +236,7 @@ export default function App() {
     return () => {
       mounted = false;
       unsubscribe();
+      unsubscribeStatus();
       unsubscribeAssets();
       unsubscribeRuntime();
       unsubscribeProgress();
@@ -422,6 +430,39 @@ export default function App() {
     await window.aegis.openLogFolder();
   };
 
+  const handleOpenHelpGuide = async () => {
+    setHelpActionBusy(true);
+    setHelpError(null);
+    setHelpMessage(null);
+    try {
+      const result = await window.aegis.openHelpGuide();
+      setHelpMessage(`Opened help guide: ${result.path}`);
+    } catch (err) {
+      setHelpError(err instanceof Error ? err.message : "Unable to open help guide.");
+    } finally {
+      setHelpActionBusy(false);
+    }
+  };
+
+  const handleUploadLogs = async () => {
+    setHelpActionBusy(true);
+    setHelpError(null);
+    setHelpMessage(null);
+    try {
+      const result = await window.aegis.uploadLogs();
+      if (!result.ok) {
+        setHelpError(result.message);
+        return;
+      }
+      const when = result.uploadedAt ? ` at ${result.uploadedAt}` : "";
+      setHelpMessage(`${result.message}${when}`);
+    } catch (err) {
+      setHelpError(err instanceof Error ? err.message : "Log upload failed.");
+    } finally {
+      setHelpActionBusy(false);
+    }
+  };
+
   const handlePolicySave = async () => {
     setPolicyBusy(true);
     setPolicyError(null);
@@ -521,6 +562,12 @@ export default function App() {
     if (progress.active) {
       return progress;
     }
+    if (status.openclawState === "starting") {
+      return {
+        active: true,
+        message: "Starting OpenClaw service...",
+      };
+    }
     if (runtime.downloading || runtimeBusy) {
       return {
         active: true,
@@ -543,7 +590,15 @@ export default function App() {
       };
     }
     return { active: false };
-  }, [progress, runtime.downloading, runtimeBusy, onboardBusy, assets.playwright.downloading, assetsBusy]);
+  }, [
+    progress,
+    status.openclawState,
+    runtime.downloading,
+    runtimeBusy,
+    onboardBusy,
+    assets.playwright.downloading,
+    assetsBusy,
+  ]);
 
   const progressLabel = useMemo(() => {
     if (!activeProgress.task) {
@@ -558,6 +613,16 @@ export default function App() {
   }, [activeProgress.task]);
 
   const runtimeReady = runtime.installed;
+  const openclawStatusLabel =
+    status.openclawState === "starting"
+      ? "starting service"
+      : status.openclawState === "online"
+        ? "online"
+        : "offline";
+  const serviceBadge =
+    status.openclawState === "starting" ? "Starting" : status.running ? "Running" : "Stopped";
+  const serviceBadgeClass =
+    status.openclawState === "starting" || status.running ? "ok" : "idle";
 
   const stepBlocked =
     (step === 0 && !form.acceptRisk) ||
@@ -862,8 +927,8 @@ export default function App() {
           <h1>Projekt Aegis</h1>
           <p>Secure OpenClaw Sandbox Controller</p>
         </div>
-        <div className={`status ${status.running ? "ok" : "idle"}`}>
-          {status.running ? "Running" : "Stopped"}
+        <div className={`status ${serviceBadgeClass}`}>
+          {serviceBadge}
         </div>
       </header>
 
@@ -873,9 +938,14 @@ export default function App() {
         <div className="panel-title">Control</div>
         <div className="buttons">
           <button
-            className="primary"
+            className="primary start-cta"
             onClick={handleStart}
-            disabled={busy || status.running || !runtime.installed || runtime.downloading}
+            disabled={
+              busy ||
+              status.openclawState !== "offline" ||
+              !runtime.installed ||
+              runtime.downloading
+            }
           >
             Start
           </button>
@@ -885,14 +955,14 @@ export default function App() {
           <button
             className="ghost"
             onClick={handleOpenDashboard}
-            disabled={!status.openclawRunning}
+            disabled={status.openclawState !== "online"}
           >
             Open OpenClaw Dashboard
           </button>
         </div>
         <div className="status-grid">
           <div>Controller: {status.controllerRunning ? "online" : "offline"}</div>
-          <div>OpenClaw: {status.openclawRunning ? "online" : "offline"}</div>
+          <div>OpenClaw: {openclawStatusLabel}</div>
           <div>Gateway Port: {status.gatewayPort ?? "-"}</div>
           <div>Runtime: {runtime.installed ? "installed" : "missing"}</div>
         </div>
@@ -906,6 +976,23 @@ export default function App() {
           <div>Communication: {setup.communication ?? "web"}</div>
           <div>Dashboard URL: {setup.dashboardUrl ?? "-"}</div>
         </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-title">Help</div>
+        <p className="muted">
+          Open guidance docs or upload sanitized support logs for beta troubleshooting.
+        </p>
+        <div className="buttons">
+          <button className="ghost" onClick={handleOpenHelpGuide} disabled={helpActionBusy}>
+            Open Help Guide (PDF)
+          </button>
+          <button className="ghost" onClick={handleUploadLogs} disabled={helpActionBusy}>
+            {helpActionBusy ? "Uploading..." : "Upload Sanitized Logs"}
+          </button>
+        </div>
+        {helpMessage && <div className="muted">{helpMessage}</div>}
+        {helpError && <div className="assets-error">{helpError}</div>}
       </section>
 
       {runtimePanel}

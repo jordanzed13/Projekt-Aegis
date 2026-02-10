@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, shell } from "electron";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -71,6 +72,8 @@ type AegisRuntimeInstallRequest = {
   method?: "git" | "npm";
 };
 
+type OpenClawState = "offline" | "starting" | "online";
+
 type OpenClawLaunchTarget =
   | { mode: "entry"; entry: string }
   | { mode: "cmd"; cmd: string }
@@ -106,6 +109,7 @@ let runtimeLastError: string | null = null;
 let progressStatus: AegisProgressStatus = { active: false };
 let progressClearTimer: NodeJS.Timeout | null = null;
 let settings: AegisSettings = { onboardingComplete: false };
+let openclawState: OpenClawState = "offline";
 
 const isDev = Boolean(process.env.ELECTRON_RENDERER_URL);
 
@@ -150,7 +154,8 @@ const saveSettings = async (next: AegisSettings) => {
 
 const resolveOpenClawConfigPath = () => path.join(resolveAegisDataDir(), "openclaw.json");
 const resolveOpenClawStateDir = () => path.join(resolveAegisDataDir(), "openclaw-state");
-const resolveWorkspaceDir = () => path.join(resolveAegisDataDir(), "workspace");
+const resolveWorkspaceDir = () =>
+  path.join(process.env.USERPROFILE || app.getPath("home"), "Aegis_Workspace");
 const resolveAegisLogsDir = () => path.join(resolveAegisDataDir(), "logs");
 const resolveManagedRuntimePrefix = () => path.join(resolveAegisDataDir(), "runtime", "npm-global");
 const resolveManagedOpenClawRoot = () =>
@@ -185,6 +190,9 @@ const resolveAegisMetricsPath = () => path.join(resolveAegisDataDir(), "metrics.
 const resolvePolicyFilePath = () => path.join(resolveAegisDataDir(), "policy.json");
 const resolveAuthProfilesPath = (agentId = "main") =>
   path.join(resolveOpenClawStateDir(), "agents", agentId, "agent", "auth-profiles.json");
+const LOG_UPLOAD_ENDPOINT = "https://api.prophettechnology.org/v1/logs/upload";
+const LOG_UPLOAD_SECRET_NAME = "prophet-upload-api-beta.key";
+const REDACTED_VALUE = "******";
 
 const resolveLegacyUserDataDir = () => app.getPath("userData");
 
@@ -1371,6 +1379,7 @@ const startOpenClaw = async () => {
   if (launch.mode === "none") {
     runtimeLastError = launch.error;
     emitLog(`[openclaw] ${launch.error}`);
+    setOpenclawState("offline");
     void emitRuntimeStatus();
     return;
   }
@@ -1396,17 +1405,23 @@ const startOpenClaw = async () => {
       env: baseEnv,
     });
   }
+  setOpenclawState("starting");
+  emitStatus();
 
   openclawProcess.on("error", (err) => {
     const message = err instanceof Error ? err.message : String(err);
     emitLog(`[openclaw] process error: ${message}`);
     openclawProcess = null;
+    setOpenclawState("offline");
+    emitStatus();
   });
   openclawProcess.stdout.on("data", (data) => emitLog(`[openclaw] ${data.toString()}`));
   openclawProcess.stderr.on("data", (data) => emitLog(`[openclaw] ${data.toString()}`));
   openclawProcess.on("exit", (code, signal) => {
     emitLog(`[openclaw] process exited (code ${code ?? "null"}, signal ${signal ?? "none"})`);
     openclawProcess = null;
+    setOpenclawState("offline");
+    emitStatus();
   });
 };
 
@@ -1442,13 +1457,16 @@ const startController = async () => {
     const message = err instanceof Error ? err.message : String(err);
     emitLog(`[controller] process error: ${message}`);
     controllerProcess = null;
+    emitStatus();
   });
   controllerProcess.stdout.on("data", (data) => emitLog(`[controller] ${data.toString()}`));
   controllerProcess.stderr.on("data", (data) => emitLog(`[controller] ${data.toString()}`));
   controllerProcess.on("exit", (code, signal) => {
     emitLog(`[controller] process exited (code ${code ?? "null"}, signal ${signal ?? "none"})`);
     controllerProcess = null;
+    emitStatus();
   });
+  emitStatus();
 };
 
 const stopProcesses = () => {
@@ -1456,14 +1474,35 @@ const stopProcesses = () => {
   openclawProcess?.kill();
   controllerProcess = null;
   openclawProcess = null;
+  openclawState = "offline";
+  emitStatus();
 };
 
-const getStatus = () => ({
-  running: Boolean(openclawProcess && controllerProcess),
-  controllerRunning: Boolean(controllerProcess),
-  openclawRunning: Boolean(openclawProcess),
-  gatewayPort,
-});
+const getStatus = () => {
+  const openclawRunning = Boolean(openclawProcess);
+  return {
+    running: Boolean(openclawRunning && controllerProcess),
+    controllerRunning: Boolean(controllerProcess),
+    openclawRunning,
+    openclawState: openclawRunning ? openclawState : "offline",
+    gatewayPort,
+  };
+};
+
+const emitStatus = () => {
+  if (!mainWindow) {
+    return;
+  }
+  mainWindow.webContents.send("aegis:status:update", getStatus());
+};
+
+const setOpenclawState = (next: OpenClawState) => {
+  if (openclawState === next) {
+    return;
+  }
+  openclawState = next;
+  emitStatus();
+};
 
 const fetchControllerJson = async <T = unknown>(pathName: string): Promise<T> => {
   const url = `http://127.0.0.1:${controllerPort}${pathName}`;
@@ -1481,6 +1520,9 @@ const emitLog = (line: string) => {
   const trimmed = line.trim();
   if (!trimmed) {
     return;
+  }
+  if (trimmed.includes("[controller] Aegis Controller connected to OpenClaw gateway")) {
+    setOpenclawState("online");
   }
   mainWindow.webContents.send("aegis:log", `${new Date().toISOString()} ${trimmed}`);
 };
@@ -1897,6 +1939,168 @@ const resolveActiveLogPath = async () => {
   return ensureSessionLogFile();
 };
 
+const resolveHelpGuidePath = () => {
+  const candidates = [
+    path.resolve(getRepoRoot(), "src", "guides", "Help.pdf"),
+    path.join(process.resourcesPath, "guides", "Help.pdf"),
+    path.join(process.resourcesPath, "src", "guides", "Help.pdf"),
+    path.join(resolveAegisDataDir(), "guides", "Help.pdf"),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return candidates[0];
+};
+
+const openHelpGuide = async () => {
+  const helpPath = resolveHelpGuidePath();
+  if (!existsSync(helpPath)) {
+    throw new Error(`Help guide not found at ${helpPath}`);
+  }
+  const result = await shell.openPath(helpPath);
+  if (result) {
+    throw new Error(result);
+  }
+  return { path: helpPath };
+};
+
+const resolveUploadSecretPath = () => {
+  const candidates = [
+    path.resolve(getRepoRoot(), ".secrets", LOG_UPLOAD_SECRET_NAME),
+    path.join(resolveAegisDataDir(), ".secrets", LOG_UPLOAD_SECRET_NAME),
+    path.join(process.resourcesPath, ".secrets", LOG_UPLOAD_SECRET_NAME),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return candidates[0];
+};
+
+const sanitizeObjectForUpload = (value: unknown, inResult = false): unknown => {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeObjectForUpload(item, inResult));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const output: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const normalized = key.toLowerCase();
+    const nextInResult = inResult || normalized === "result";
+
+    if (normalized === "stdout" || normalized === "stderr" || normalized === "output") {
+      output[key] = REDACTED_VALUE;
+      continue;
+    }
+    if (nextInResult && normalized === "text") {
+      output[key] = REDACTED_VALUE;
+      continue;
+    }
+    if (normalized === "result") {
+      output[key] =
+        raw && typeof raw === "object"
+          ? sanitizeObjectForUpload(raw, true)
+          : REDACTED_VALUE;
+      continue;
+    }
+    output[key] = sanitizeObjectForUpload(raw, nextInResult);
+  }
+  return output;
+};
+
+const maskPiiInLine = (line: string) => {
+  return line
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[email]")
+    .replace(/\b(?!127\.0\.0\.1)\d{1,3}(?:\.\d{1,3}){3}\b/g, "[ip]")
+    .replace(/([A-Za-z]:\\Users\\)([^\\]+)/g, "$1[user]")
+    .replace(/(\/Users\/)([^\/\s]+)/g, "$1[user]")
+    .replace(/\bBearer\s+[A-Za-z0-9._-]+\b/gi, "Bearer [redacted]")
+    .replace(/\b[A-Fa-f0-9]{32,}\b/g, "[secret]");
+};
+
+const sanitizeLogLineForUpload = (line: string) => {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return "";
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    const sanitized = sanitizeObjectForUpload(parsed);
+    return maskPiiInLine(JSON.stringify(sanitized));
+  } catch {
+    return maskPiiInLine(trimmed);
+  }
+};
+
+const createSanitizedLogFile = async (sourcePath: string) => {
+  const raw = await fs.readFile(sourcePath, "utf8");
+  const lines = raw.split(/\r?\n/);
+  const sanitizedLines = lines.map((line) => sanitizeLogLineForUpload(line)).filter(Boolean);
+  const tmpDir = path.join(os.tmpdir(), "projekt-aegis");
+  await fs.mkdir(tmpDir, { recursive: true });
+  const outputPath = path.join(tmpDir, `sanitized_aegis_log_${formatLogTimestamp()}.jsonl`);
+  await fs.writeFile(outputPath, `${sanitizedLines.join("\n")}\n`, "utf8");
+  return outputPath;
+};
+
+const uploadSanitizedLogs = async () => {
+  const sourcePath = await resolveActiveLogPath();
+  if (!existsSync(sourcePath)) {
+    return { ok: false, message: "No log file available to upload." };
+  }
+  const secretPath = resolveUploadSecretPath();
+  if (!existsSync(secretPath)) {
+    return {
+      ok: false,
+      message: `Upload secret file not found at ${secretPath}.`,
+    };
+  }
+  const secret = (await fs.readFile(secretPath, "utf8")).trim();
+  if (!secret) {
+    return {
+      ok: false,
+      message: `Upload secret file is empty at ${secretPath}.`,
+    };
+  }
+
+  const sanitizedPath = await createSanitizedLogFile(sourcePath);
+  const sanitizedBody = await fs.readFile(sanitizedPath);
+  const form = new FormData();
+  form.set(
+    "file",
+    new Blob([sanitizedBody], { type: "application/jsonl" }),
+    path.basename(sanitizedPath),
+  );
+  form.set("source", "projekt-aegis");
+  form.set("timestamp", new Date().toISOString());
+
+  const response = await fetch(LOG_UPLOAD_ENDPOINT, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${secret}`,
+    },
+    body: form,
+  });
+  const responseText = await response.text();
+  if (!response.ok) {
+    const suffix = responseText ? `: ${responseText.slice(0, 240)}` : "";
+    return {
+      ok: false,
+      message: `Upload failed (${response.status})${suffix}`,
+    };
+  }
+  emitLog(`[upload] Sanitized log uploaded successfully (${path.basename(sanitizedPath)}).`);
+  return {
+    ok: true,
+    message: "Sanitized log uploaded successfully.",
+    uploadedAt: new Date().toISOString(),
+  };
+};
+
 const openAuditLog = async () => {
   const logPath = await resolveActiveLogPath();
   await shell.openPath(logPath);
@@ -1990,6 +2194,8 @@ app.whenReady().then(async () => {
   ipcMain.handle("aegis:log-path", async () => ({ path: await resolveActiveLogPath() }));
   ipcMain.handle("aegis:log-open", async () => openAuditLog());
   ipcMain.handle("aegis:log-open-folder", async () => openAuditLogFolder());
+  ipcMain.handle("aegis:help-open", async () => openHelpGuide());
+  ipcMain.handle("aegis:log-upload", async () => uploadSanitizedLogs());
   ipcMain.handle("aegis:policy:get", async () => fetchPolicyStatus());
   ipcMain.handle("aegis:policy:set", async (_event, payload: PolicySettings) =>
     applyPolicySettings(payload),

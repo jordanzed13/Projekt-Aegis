@@ -28,7 +28,7 @@ export class GatewayClient {
   private opts: GatewayClientOptions;
   private readonly clientId = "gateway-client";
   private readonly clientMode = "backend";
-  private readonly clientVersion = "0.1.0";
+  private readonly clientVersion = "0.2.1";
 
   constructor(opts: GatewayClientOptions) {
     this.opts = opts;

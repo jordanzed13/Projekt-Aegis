@@ -2,6 +2,7 @@ export type AegisStatus = {
   running: boolean;
   controllerRunning: boolean;
   openclawRunning: boolean;
+  openclawState: "offline" | "starting" | "online";
   gatewayPort?: number;
 };
 
@@ -61,12 +62,12 @@ export type AegisRuntimeStatus = {
   path: string;
   downloading: boolean;
   lastError?: string;
-  method?: "git";
+  method?: "git" | "npm";
   installedAt?: string;
 };
 
 export type AegisRuntimeInstallRequest = {
-  method?: "git";
+  method?: "git" | "npm";
 };
 
 export type AegisRuntimeInstallResult = {
@@ -114,6 +115,12 @@ export type AegisLogPathResult = {
   path: string;
 };
 
+export type AegisLogUploadResult = {
+  ok: boolean;
+  message: string;
+  uploadedAt?: string;
+};
+
 export type AegisPolicySettings = {
   enabled: boolean;
   path: string;
@@ -148,11 +155,14 @@ declare global {
       logPath: () => Promise<AegisLogPathResult>;
       openLog: () => Promise<AegisLogPathResult>;
       openLogFolder: () => Promise<AegisLogPathResult>;
+      openHelpGuide: () => Promise<AegisLogPathResult>;
+      uploadLogs: () => Promise<AegisLogUploadResult>;
       policyStatus: () => Promise<AegisPolicyStatus>;
       policyUpdate: (payload: AegisPolicySettings) => Promise<AegisPolicyStatus>;
       openPolicyFile: () => Promise<AegisLogPathResult>;
       openPolicyFolder: () => Promise<AegisLogPathResult>;
       onLog: (handler: (line: string) => void) => () => void;
+      onStatus: (handler: (status: AegisStatus) => void) => () => void;
       onAssetsStatus: (handler: (status: AegisAssetsStatus) => void) => () => void;
       onRuntimeStatus: (handler: (status: AegisRuntimeStatus) => void) => () => void;
       onProgress: (handler: (status: AegisProgressStatus) => void) => () => void;

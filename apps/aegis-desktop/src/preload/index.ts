@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld("aegis", {
   logPath: () => ipcRenderer.invoke("aegis:log-path"),
   openLog: () => ipcRenderer.invoke("aegis:log-open"),
   openLogFolder: () => ipcRenderer.invoke("aegis:log-open-folder"),
+  openHelpGuide: () => ipcRenderer.invoke("aegis:help-open"),
+  uploadLogs: () => ipcRenderer.invoke("aegis:log-upload"),
   policyStatus: () => ipcRenderer.invoke("aegis:policy:get"),
   policyUpdate: (payload) => ipcRenderer.invoke("aegis:policy:set", payload),
   openPolicyFile: () => ipcRenderer.invoke("aegis:policy:open"),
@@ -31,6 +33,11 @@ contextBridge.exposeInMainWorld("aegis", {
     const listener = (_event, payload) => handler(payload);
     ipcRenderer.on("aegis:assets:status", listener);
     return () => ipcRenderer.removeListener("aegis:assets:status", listener);
+  },
+  onStatus: (handler) => {
+    const listener = (_event, payload) => handler(payload);
+    ipcRenderer.on("aegis:status:update", listener);
+    return () => ipcRenderer.removeListener("aegis:status:update", listener);
   },
   onRuntimeStatus: (handler) => {
     const listener = (_event, payload) => handler(payload);

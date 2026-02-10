@@ -77,3 +77,28 @@
 - Added stale legacy runtime cleanup (`%APPDATA%/Projekt Aegis/runtime/openclaw`) and stale wrapper cleanup (`.local\\bin\\openclaw.cmd`) before managed runtime install.
 - Strengthened wrapper validation: `.cmd` launchers are accepted only if they point to an existing `dist/entry.js` in a valid OpenClaw build.
 - Added startup build log line (`[system] Aegis desktop <version> started`) to make runtime log/version verification unambiguous.
+- Added local beta upload API secret file location for telemetry integration (path only, no secret content): `.secrets/prophet-upload-api-beta.key`.
+
+## 2026-02-09
+
+- Phase 3 implementation started with minimal-layout UI polish (no full redesign) and larger primary Start control for improved visibility.
+- Added OpenClaw startup state UX: status now stays `starting service` after Start click and switches to `online` only after controller-gateway connection is confirmed in logs.
+- Added Help panel actions: open local guide PDF (`src/guides/Help.pdf`) and manual log upload trigger for beta support.
+- Implemented on-demand log upload pipeline to `https://api.prophettechnology.org/v1/logs/upload` using `Authorization: Bearer <secret>` from local secret file.
+- Implemented upload-time sanitization (without mutating primary local logs): redacts `payload.result` content/output and masks common PII patterns before transmission.
+- Added workspace-oriented security policy behavior for Phase 3:
+  - writes inside `%USERPROFILE%\\Aegis_Workspace` default to green/silent;
+  - writes outside workspace escalate to yellow notify;
+  - delete intent outside workspace escalates to red approval block.
+
+## 2026-02-10
+
+- Phase 3 (Beta): bundled `src/guides/Help.pdf` and wired the Help panel to open it from installed resources.
+- Phase 3 (Beta): ensured the log upload bearer key is read from a file (not hardcoded) and can be bundled into the installer via `extraResources` when `.secrets/prophet-upload-api-beta.key` exists locally at build time (file remains gitignored).
+- Pulled the latest OpenClaw into `openclaw_new/` (gitignored) for analysis of Lobster typed workflow pipelines.
+- Hardened policy to treat macro workflow tools (`lobster`, `workflow_tool`) as high-risk pending a Lobster-aware parser/enforcer.
+- Updated Phase 3 telemetry target endpoint to: `https://api.prophettechnology.org/v1/logs/upload`.
+- Bumped Phase 3 baseline version to `v0.2.1` across workspace packages and desktop release metadata.
+- Updated controller gateway client version marker to `0.2.1` for runtime/client trace consistency.
+- Updated README release metadata and installer naming examples to `0.2.1`.
+- Validation run completed for `v0.2.1`: workspace tests and builds passed for `aegis-core`, `aegis-controller`, and `aegis-desktop`.

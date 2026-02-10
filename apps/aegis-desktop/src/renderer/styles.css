@@ -121,6 +121,12 @@ button.primary {
   color: #04110a;
 }
 
+button.start-cta {
+  min-width: 240px;
+  min-height: 88px;
+  font-size: 18px;
+}
+
 button.ghost {
   background: transparent;
   border: 1px solid rgba(91, 255, 154, 0.5);
