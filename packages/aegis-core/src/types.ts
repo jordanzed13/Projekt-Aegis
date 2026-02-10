@@ -47,6 +47,7 @@ export type AuditEventType =
   | "REQUEST"
   | "DECISION"
   | "EXECUTION"
+  | "LOBSTER_WORKFLOW"
   | "ERROR"
   | "USER_ALERT"
   | "USER_APPROVAL";

@@ -21,6 +21,10 @@
       "to": "extensions/aegis-proxy"
     },
     {
+      "from": "../../extensions/aegis-lobster-guard",
+      "to": "extensions/aegis-lobster-guard"
+    },
+    {
       "from": "../../apps/aegis-controller/dist",
       "to": "controller"
     },

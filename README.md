@@ -4,10 +4,10 @@ Projekt Aegis is a Windows-first security shell for OpenClaw. It runs OpenClaw l
 
 ## Official Alpha
 
-- Release: `v0.2.1` (official alpha)
+- Release: `v0.2.2` (official alpha)
 - Platform: Windows 10/11
 - Runtime model: Aegis installer + first-run managed OpenClaw runtime install
-- Recommended distribution artifact: `Projekt Aegis Setup 0.2.1.exe`
+- Recommended distribution artifact: `Projekt Aegis Setup 0.2.2.exe`
 
 ## Key Features
 
@@ -19,6 +19,7 @@ Projekt Aegis is a Windows-first security shell for OpenClaw. It runs OpenClaw l
 - Local-only gateway binding (loopback) with token auth
 - Provider catalog auto-loaded from OpenClaw models list
 - Agentsh-inspired policy heuristics for sensitive files, dangerous commands, and risky env vars
+- Gateway-level Lobster workflow monitoring and sanitized audit logging
 - Optional policy file overrides with live reload
 
 ## Quick Start (Development)
@@ -78,7 +79,7 @@ The app will spawn OpenClaw locally and the Aegis controller on first start.
 - Aegis audit log archives: `%APPDATA%/Projekt Aegis/logs/Archived_aegis_audit_<UTC timestamp>.jsonl`
 - Aegis metrics: `%APPDATA%/Projekt Aegis/metrics.json`
 - Aegis policy file (optional): `%APPDATA%/Projekt Aegis/policy.json`
-- Planned Phase 3 log upload endpoint: `https://api.prophettechnology.org/v1/logs/upload`
+- Log upload endpoint (beta): `https://api.prophettechnology.org/v1/logs/upload`
 
 ## Notes
 

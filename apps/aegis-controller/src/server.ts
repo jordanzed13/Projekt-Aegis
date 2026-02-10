@@ -59,6 +59,16 @@ const readJson = async (req: http.IncomingMessage): Promise<unknown> => {
   return raw ? JSON.parse(raw) : {};
 };
 
+const truncate = (value: unknown, max = 2000) => {
+  if (typeof value !== "string") {
+    return value;
+  }
+  if (value.length <= max) {
+    return value;
+  }
+  return `${value.slice(0, max)}...(truncated)`;
+};
+
 export const createServer = (
   config: ControllerConfig,
   gateway: GatewayClient,
@@ -162,6 +172,42 @@ export const createServer = (
             lastError: policyState.lastError,
           }),
         );
+        return;
+      } catch (err) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: String(err) }));
+        return;
+      }
+    }
+
+    // Lightweight audit ingestion for gateway-level monitors (e.g. Lobster workflow preflight logging).
+    if (req.method === "POST" && req.url === "/audit/lobster") {
+      try {
+        const body = (await readJson(req)) as Record<string, unknown>;
+        const agentId = typeof body.agentId === "string" ? body.agentId : "unknown";
+        const sessionKey = typeof body.sessionKey === "string" ? body.sessionKey : "unknown";
+        const requestId = typeof body.requestId === "string" ? body.requestId : randomUUID();
+        const payload = typeof body.payload === "object" && body.payload ? body.payload : {};
+
+        // Ensure we don't persist unbounded strings.
+        const safePayload =
+          payload && typeof payload === "object"
+            ? JSON.parse(
+                JSON.stringify(payload, (_key, value) => truncate(value, 4000)),
+              )
+            : payload;
+
+        audit.append({
+          type: "LOBSTER_WORKFLOW",
+          requestId,
+          agentId,
+          sessionKey,
+          toolName: "lobster",
+          payload: safePayload,
+        });
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
         return;
       } catch (err) {
         res.writeHead(400, { "Content-Type": "application/json" });

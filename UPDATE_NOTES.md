@@ -102,3 +102,8 @@
 - Updated controller gateway client version marker to `0.2.1` for runtime/client trace consistency.
 - Updated README release metadata and installer naming examples to `0.2.1`.
 - Validation run completed for `v0.2.1`: workspace tests and builds passed for `aegis-core`, `aegis-controller`, and `aegis-desktop`.
+- Added Lobster adaptation baseline for `v0.2.2`: enabled the OpenClaw `lobster` tool/plugin with Gateway-level monitoring and sanitized workflow audit logging.
+- Added `aegis-lobster-guard` OpenClaw gateway extension to intercept `lobster` calls (`before_tool_call`) and emit `LOBSTER_WORKFLOW` audit events (sanitized inputs only).
+- Added controller ingestion endpoint `POST /audit/lobster` for Lobster workflow audit events, with payload truncation to prevent unbounded log growth.
+- Added `LOBSTER_WORKFLOW` to core audit event types and updated Lobster impact documentation to reflect the monitored-enable approach.
+- Bumped Phase 3 alpha version to `v0.2.2` across workspace packages and desktop release metadata.

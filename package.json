@@ -1,6 +1,6 @@
 {
   "name": "projekt-aegis",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "Projekt Aegis - Secure OpenClaw sidecar sandbox",
   "workspaces": [
@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "dev": "npm run dev --workspace apps/aegis-desktop",
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build --workspace packages/aegis-core && npm run build --workspace apps/aegis-controller && npm run build --workspace apps/aegis-desktop",
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present"
   },

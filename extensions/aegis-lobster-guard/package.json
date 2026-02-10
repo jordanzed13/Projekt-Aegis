@@ -1,8 +1,9 @@
 {
-  "name": "aegis-proxy",
+  "name": "aegis-lobster-guard",
   "version": "0.2.2",
   "type": "module",
   "openclaw": {
     "extensions": ["./index.ts"]
   }
 }
+

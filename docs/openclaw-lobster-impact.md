@@ -33,9 +33,12 @@ This keeps the sandbox model coherent until we implement deeper integration.
 
 ## Adaptation Options
 
-1. Keep Lobster disabled in OpenClaw config for Beta.
-2. Keep Lobster enabled but require approval for every `lobster` tool call (current safe default in `v0.2.1`).
-3. Move to a strict whitelist (target approach):
+1. Enable Lobster with Gateway-level monitoring (target approach for `v0.2.2+`):
+   - Intercept at Gateway `before_tool_call` for `lobster`.
+   - Log the workflow inputs (sanitized) for audit and incident response.
+   - Enforce a strict allowlist over Lobster operators/subcommands, and hard-block forbidden patterns.
+2. Keep Lobster enabled but require approval for every `lobster` tool call (safe fallback).
+3. Move to a strict whitelist (more complete):
    - Intercept at Gateway `before_tool_call` for `lobster`.
    - Validate workflow JSON against a schema to reject malformed workflows early.
    - Allow only approved Lobster operators/subcommands and forbid direct shell execution patterns unless explicitly whitelisted.
@@ -51,4 +54,4 @@ This keeps the sandbox model coherent until we implement deeper integration.
 
 ## Recommendation
 
-For `v0.2.1` stability and sandbox strength, treat Lobster as `RED` until we can reliably enforce policy on its internal pipeline steps. The intended Phase 3 direction is to transition from "block everything" to a strict whitelist with workflow preflight validation and sequence-aware exfiltration detection.
+For `v0.2.2`, enable Lobster with Gateway-level monitoring and sanitized workflow logging, then incrementally tighten enforcement with an allowlist + schema validation and sequence-aware exfiltration detection.

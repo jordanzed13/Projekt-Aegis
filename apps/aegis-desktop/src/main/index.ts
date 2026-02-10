@@ -586,6 +586,13 @@ const resolvePluginPath = () => {
   return path.join(process.resourcesPath, "extensions", "aegis-proxy");
 };
 
+const resolveLobsterGuardPluginPath = () => {
+  if (isDev) {
+    return path.resolve(getRepoRoot(), "extensions", "aegis-lobster-guard");
+  }
+  return path.join(process.resourcesPath, "extensions", "aegis-lobster-guard");
+};
+
 const resolveAssetsRoot = () => path.join(resolveAegisDataDir(), "assets");
 
 const resolvePlaywrightAssetsPath = () => path.join(resolveAssetsRoot(), "playwright-browsers");
@@ -1242,6 +1249,7 @@ const applyAegisOverlay = (
   modelOverride?: string,
 ) => {
   const pluginPath = resolvePluginPath();
+  const lobsterGuardPath = resolveLobsterGuardPluginPath();
   const next: Record<string, unknown> = { ...config };
 
   const gateway = (next.gateway as Record<string, unknown> | undefined) ?? {};
@@ -1275,10 +1283,14 @@ const applyAegisOverlay = (
       : [],
   );
   pluginPaths.add(pluginPath);
+  pluginPaths.add(lobsterGuardPath);
   const pluginEntries = (plugins.entries as Record<string, unknown> | undefined) ?? {};
   const nextPluginEntries: Record<string, unknown> = {
     ...pluginEntries,
     "aegis-proxy": { enabled: true, config: { controllerUrl } },
+    "aegis-lobster-guard": { enabled: true, config: { controllerUrl } },
+    // Enable Lobster tool (optional plugin) so we can monitor/whitelist at Gateway level.
+    lobster: { enabled: true },
   };
   for (const pluginId of listBundledChannelPluginIds()) {
     const existing = nextPluginEntries[pluginId];
@@ -1299,9 +1311,16 @@ const applyAegisOverlay = (
   };
 
   const tools = (next.tools as Record<string, unknown> | undefined) ?? {};
+  const existingAlsoAllow = Array.isArray((tools as Record<string, unknown>).alsoAllow)
+    ? (((tools as Record<string, unknown>).alsoAllow as unknown[]) ?? []).filter(
+        (value): value is string => typeof value === "string",
+      )
+    : [];
   next.tools = {
     ...tools,
     profile: "full",
+    // Optional plugin tools need explicit enablement. Keep core-tool allowlists unchanged.
+    alsoAllow: Array.from(new Set<string>([...existingAlsoAllow, "lobster"])),
   };
 
   const agents = (next.agents as Record<string, unknown> | undefined) ?? {};
@@ -1368,6 +1387,7 @@ const startOpenClaw = async () => {
     return;
   }
   await ensureGatewayToken();
+  const auditLogPath = await ensureSessionLogFile();
   const playwrightPath = resolvePlaywrightAssetsPath();
   const stateDir = resolveOpenClawStateDir();
   const configPath = resolveOpenClawConfigPath();
@@ -1391,6 +1411,8 @@ const startOpenClaw = async () => {
     OPENCLAW_GATEWAY_TOKEN: gatewayToken,
     OPENCLAW_CONFIG_PATH: configPath,
     PLAYWRIGHT_BROWSERS_PATH: playwrightPath,
+    // Used by gateway plugins (e.g. aegis-lobster-guard) for local audit append fallback.
+    AEGIS_AUDIT_LOG_PATH: auditLogPath,
   };
   if (launch.mode === "cmd") {
     emitLog(`[openclaw] Launching via CLI: ${launch.cmd} (cwd: ${workingDir})`);
