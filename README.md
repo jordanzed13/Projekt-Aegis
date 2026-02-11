@@ -2,9 +2,9 @@
 
 Projekt Aegis is a Windows-first security shell for OpenClaw. It runs OpenClaw locally, routes all tool actions through a sidecar proxy, and enforces RED/YELLOW/GREEN guardrails with audit logging and user approvals.
 
-## Official Alpha
+## Beta Test version
 
-- Release: `v0.2.3` (official alpha)
+- Release: `v0.2.3` (Beta)
 - Platform: Windows 10/11
 - Runtime model: Aegis installer + first-run managed OpenClaw runtime install
 - Recommended distribution artifact: `Projekt Aegis Setup 0.2.3.exe`
