@@ -12,16 +12,19 @@ export type AegisSetupStatus = {
   provider?: string;
   model?: string;
   communication?: "web" | "messaging";
+  autoCrashReports?: boolean;
   dashboardUrl?: string;
 };
 
 export type AegisOnboardRequest = {
-  acceptRisk: boolean;
+  acceptRisk?: boolean;
+  acceptTerms?: boolean;
   provider: string;
   apiKey?: string;
   model?: string;
   gatewayToken?: string;
   communication?: "web" | "messaging";
+  autoCrashReports?: boolean;
 };
 
 export type AegisOnboardResult = {
@@ -121,6 +124,13 @@ export type AegisLogUploadResult = {
   uploadedAt?: string;
 };
 
+export type AegisTermsResult = {
+  ok: boolean;
+  path?: string;
+  content?: string;
+  error?: string;
+};
+
 export type AegisPolicySettings = {
   enabled: boolean;
   path: string;
@@ -156,6 +166,8 @@ declare global {
       openLog: () => Promise<AegisLogPathResult>;
       openLogFolder: () => Promise<AegisLogPathResult>;
       openHelpGuide: () => Promise<AegisLogPathResult>;
+      terms: () => Promise<AegisTermsResult>;
+      logoPath: () => Promise<{ path?: string | null }>;
       uploadLogs: () => Promise<AegisLogUploadResult>;
       policyStatus: () => Promise<AegisPolicyStatus>;
       policyUpdate: (payload: AegisPolicySettings) => Promise<AegisPolicyStatus>;

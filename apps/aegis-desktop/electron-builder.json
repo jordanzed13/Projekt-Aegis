@@ -11,6 +11,9 @@
     "dist/preload/**",
     "dist/renderer/**"
   ],
+  "win": {
+    "icon": "../../Logo1.jpg"
+  },
   "extraResources": [
     {
       "from": "../../resources/node/node-v22.13.1-win-x64",
@@ -47,6 +50,18 @@
     {
       "from": "../../src/guides",
       "to": "guides"
+    },
+    {
+      "from": "../../TnC.txt",
+      "to": "docs/TnC.txt"
+    },
+    {
+      "from": "../../",
+      "to": "assets",
+      "filter": [
+        "Logo1.jpg",
+        "Logo1.jpeg"
+      ]
     },
     {
       "from": "../../.secrets",

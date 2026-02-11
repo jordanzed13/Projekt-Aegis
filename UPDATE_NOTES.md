@@ -109,3 +109,23 @@
 - Bumped Phase 3 alpha version to `v0.2.2` across workspace packages and desktop release metadata.
 - Fixed packaged OpenClaw launch regression: shipped missing `openclaw.plugin.json` manifest for the bundled `aegis-lobster-guard` gateway extension so OpenClaw config validation passes.
 - Fixed app shutdown crash on window close (`TypeError: Object has been destroyed`) by guarding IPC status/log emits when `BrowserWindow` / `webContents` is already destroyed.
+
+## 2026-02-11
+
+- Fixed startup stability by starting the controller before launching OpenClaw during normal start, onboarding restart, and provider-change restart flows.
+- Added OpenClaw plugin fallback: if startup detects missing `aegis-lobster-guard` manifest/plugin errors, Aegis disables that plugin in generated config and retries launch automatically.
+- Hardened renderer IPC sends with broader window teardown guards to avoid close-time `Object has been destroyed` exceptions.
+- Finalized 0.2.3 UI changes in dashboard:
+  - removed duplicate Model/Credentials panel and kept provider controls inside Setup Summary;
+  - fixed Help panel markup and actions;
+  - kept Start button size and made Stop / Open Dashboard controls compact;
+  - hid Policy File + Activity Log behind an `Advance options` toggle.
+- Added installer resource bundling for `TnC.txt` and Logo (`Logo1.jpg` / `Logo1.jpeg`) via desktop `extraResources`.
+- Verified packaging output contains required resources: lobster guard manifest, proxy manifest, Terms file, logo asset, and beta upload secret file.
+- Bumped workspace/app release metadata to `v0.2.3` (root + desktop/controller/core/extensions + controller client version + README artifact labels).
+- Added managed extension sync to `%APPDATA%/Projekt Aegis/extensions` before OpenClaw launch and now prefer those synced paths in generated config.
+- Added pre-launch plugin config sanitation to drop invalid extension paths and stale `aegis-lobster-guard`/`aegis-proxy` entries when manifests are missing.
+- Hardened app shutdown flow to suppress close-time status emits during quit, preventing intermittent `Object has been destroyed` exceptions in the main process.
+- Desktop `dist` packaging now writes to a versioned output folder (`dist/release-<version>`) via script, avoiding static `win-unpacked` lock collisions between builds.
+- Set Projekt Aegis app/installer icon to bundled `Logo1` asset and wired BrowserWindow icon resolution for both dev and packaged runs.
+- Bundled build now includes the latest `src/guides/Help.pdf` for the Help panel document link.

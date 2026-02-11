@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld("aegis", {
   openLog: () => ipcRenderer.invoke("aegis:log-open"),
   openLogFolder: () => ipcRenderer.invoke("aegis:log-open-folder"),
   openHelpGuide: () => ipcRenderer.invoke("aegis:help-open"),
+  terms: () => ipcRenderer.invoke("aegis:terms:get"),
+  logoPath: () => ipcRenderer.invoke("aegis:logo-path"),
   uploadLogs: () => ipcRenderer.invoke("aegis:log-upload"),
   policyStatus: () => ipcRenderer.invoke("aegis:policy:get"),
   policyUpdate: (payload) => ipcRenderer.invoke("aegis:policy:set", payload),

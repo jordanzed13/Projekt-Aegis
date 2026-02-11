@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type UIEvent } from "react";
 import type {
   AegisAssetsStatus,
   AegisModelChoice,
@@ -58,7 +58,8 @@ const initialPolicyStatus: AegisPolicyStatus = {
 };
 
 type OnboardFormState = {
-  acceptRisk: boolean;
+  acceptTerms: boolean;
+  autoCrashReports: boolean;
   provider: string;
   apiKey: string;
   model: string;
@@ -156,8 +157,14 @@ export default function App() {
   const [helpActionBusy, setHelpActionBusy] = useState(false);
   const [helpMessage, setHelpMessage] = useState<string | null>(null);
   const [helpError, setHelpError] = useState<string | null>(null);
+  const [termsText, setTermsText] = useState<string>("Loading terms...");
+  const [termsError, setTermsError] = useState<string | null>(null);
+  const [termsScrolledToEnd, setTermsScrolledToEnd] = useState(false);
+  const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
+  const [logoPath, setLogoPath] = useState<string | null>(null);
   const [form, setForm] = useState<OnboardFormState>({
-    acceptRisk: false,
+    acceptTerms: false,
+    autoCrashReports: true,
     provider: "openai",
     apiKey: "",
     model: "",
@@ -203,6 +210,10 @@ export default function App() {
         setForm((prev) => ({
           ...prev,
           gatewayToken: next.gatewayToken || prev.gatewayToken,
+          autoCrashReports:
+            typeof next.autoCrashReports === "boolean"
+              ? next.autoCrashReports
+              : prev.autoCrashReports,
         }));
       }
     });
@@ -210,6 +221,25 @@ export default function App() {
       if (mounted && next?.path) {
         setLogPath(next.path);
       }
+    });
+    window.aegis.terms().then((result) => {
+      if (!mounted) {
+        return;
+      }
+      if (result.ok && result.content) {
+        setTermsText(result.content);
+        setTermsError(null);
+      } else {
+        setTermsText("Terms file unavailable.");
+        setTermsError(result.error ?? "Unable to load terms.");
+      }
+    });
+    window.aegis.logoPath().then((result) => {
+      if (!mounted || !result?.path) {
+        return;
+      }
+      const normalized = result.path.replace(/\\/g, "/");
+      setLogoPath(encodeURI(`file://${normalized}`));
     });
     window.aegis.policyStatus().then((next) => {
       if (mounted && next) {
@@ -498,12 +528,13 @@ export default function App() {
     setOnboardError(null);
     try {
       const payload: AegisOnboardRequest = {
-        acceptRisk: form.acceptRisk,
+        acceptTerms: form.acceptTerms,
         provider: form.provider,
         apiKey: form.provider === "skip" ? undefined : form.apiKey,
         model: form.model.trim() || undefined,
         gatewayToken: form.gatewayToken.trim() || undefined,
         communication: form.communication,
+        autoCrashReports: form.autoCrashReports,
       };
       const result = await window.aegis.onboard(payload);
       if (!result.ok) {
@@ -552,6 +583,14 @@ export default function App() {
     const token = typeof crypto !== "undefined" ? crypto.randomUUID() : "";
     if (token) {
       setForm((prev) => ({ ...prev, gatewayToken: token }));
+    }
+  };
+
+  const handleTermsScroll = (event: UIEvent<HTMLDivElement>) => {
+    const target = event.currentTarget;
+    const reachedBottom = target.scrollTop + target.clientHeight >= target.scrollHeight - 2;
+    if (reachedBottom) {
+      setTermsScrolledToEnd(true);
     }
   };
 
@@ -625,7 +664,7 @@ export default function App() {
     status.openclawState === "starting" || status.running ? "ok" : "idle";
 
   const stepBlocked =
-    (step === 0 && !form.acceptRisk) ||
+    (step === 0 && (!form.acceptTerms || !termsScrolledToEnd)) ||
     (step === 1 && form.provider !== "skip" && !form.apiKey.trim()) ||
     (step === 2 && !form.model.trim()) ||
     (step === 4 && (!form.gatewayToken.trim() || !runtimeReady || runtime.downloading));
@@ -696,9 +735,12 @@ export default function App() {
     return (
       <div className="app">
         <header className="header">
-          <div>
-            <h1>Projekt Aegis</h1>
-            <p>Secure OpenClaw Sandbox Controller</p>
+          <div className="header-main">
+            {logoPath && <img src={logoPath} alt="Projekt Aegis Logo" className="app-logo" />}
+            <div>
+              <h1>Projekt Aegis</h1>
+              <p>Secure OpenClaw Sandbox Controller</p>
+            </div>
           </div>
         </header>
         <section className="panel">
@@ -715,21 +757,24 @@ export default function App() {
   if (!setup.onboardingComplete) {
     return (
       <div className="app">
-      <header className="header">
-        <div>
-          <h1>Projekt Aegis</h1>
-          <p>Production-ready OpenClaw deployment &amp; sandbox</p>
-        </div>
-      </header>
+        <header className="header">
+          <div className="header-main">
+            {logoPath && <img src={logoPath} alt="Projekt Aegis Logo" className="app-logo" />}
+            <div>
+              <h1>Projekt Aegis</h1>
+              <p>Production-ready OpenClaw deployment &amp; sandbox</p>
+            </div>
+          </div>
+        </header>
 
-      {progressPanel}
+        {progressPanel}
 
-      {runtimePanel}
+        {runtimePanel}
 
-      <section className="panel">
-        <div className="panel-title">Setup Wizard</div>
+        <section className="panel">
+          <div className="panel-title">Setup Wizard</div>
           <div className="wizard-steps">
-            {["Acknowledge", "Provider", "Model", "Communication", "Access"].map((label, idx) => (
+            {["Terms", "Provider", "Model", "Communication", "Access"].map((label, idx) => (
               <div key={label} className={`wizard-step ${step === idx ? "active" : ""}`}>
                 {idx + 1}. {label}
               </div>
@@ -738,20 +783,33 @@ export default function App() {
 
           {step === 0 && (
             <div className="wizard-panel">
-              <h2>Powerful System Notice</h2>
-              <p>
-                Projekt Aegis can execute actions on your machine and relay messages through
-                OpenClaw. Only proceed if you understand the risks and will supervise the agent.
-              </p>
+              <h2>Terms and Conditions</h2>
+              <div className="terms-scrollbox" onScroll={handleTermsScroll}>
+                {termsText}
+              </div>
+              {!termsScrolledToEnd && (
+                <p className="muted">Scroll to the bottom to enable acceptance.</p>
+              )}
+              {termsError && <div className="assets-error">Terms load error: {termsError}</div>}
               <label className="checkbox">
                 <input
                   type="checkbox"
-                  checked={form.acceptRisk}
+                  checked={form.acceptTerms}
                   onChange={(event) =>
-                    setForm((prev) => ({ ...prev, acceptRisk: event.target.checked }))
+                    setForm((prev) => ({ ...prev, acceptTerms: event.target.checked }))
                   }
                 />
-                I acknowledge this system is powerful and will supervise it.
+                I accept the Beta Terms and Limitation of Liability.
+              </label>
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={form.autoCrashReports}
+                  onChange={(event) =>
+                    setForm((prev) => ({ ...prev, autoCrashReports: event.target.checked }))
+                  }
+                />
+                Allow automatic sending of anonymized crash reports.
               </label>
             </div>
           )}
@@ -923,9 +981,12 @@ export default function App() {
   return (
     <div className="app">
       <header className="header">
-        <div>
-          <h1>Projekt Aegis</h1>
-          <p>Secure OpenClaw Sandbox Controller</p>
+        <div className="header-main">
+          {logoPath && <img src={logoPath} alt="Projekt Aegis Logo" className="app-logo" />}
+          <div>
+            <h1>Projekt Aegis</h1>
+            <p>Secure OpenClaw Sandbox Controller</p>
+          </div>
         </div>
         <div className={`status ${serviceBadgeClass}`}>
           {serviceBadge}
@@ -949,11 +1010,15 @@ export default function App() {
           >
             Start
           </button>
-          <button className="ghost" onClick={handleStop} disabled={busy || !status.running}>
+          <button
+            className="ghost compact-control"
+            onClick={handleStop}
+            disabled={busy || !status.running}
+          >
             Stop
           </button>
           <button
-            className="ghost"
+            className="ghost compact-control"
             onClick={handleOpenDashboard}
             disabled={status.openclawState !== "online"}
           >
@@ -975,116 +1040,17 @@ export default function App() {
           <div>Model: {setup.model ?? "not set"}</div>
           <div>Communication: {setup.communication ?? "web"}</div>
           <div>Dashboard URL: {setup.dashboardUrl ?? "-"}</div>
+          <div>
+            Auto Crash Reports: {setup.autoCrashReports === false ? "disabled" : "enabled"}
+          </div>
         </div>
-      </section>
-
-      <section className="panel">
-        <div className="panel-title">Help</div>
         <p className="muted">
-          Open guidance docs or upload sanitized support logs for beta troubleshooting.
-        </p>
-        <div className="buttons">
-          <button className="ghost" onClick={handleOpenHelpGuide} disabled={helpActionBusy}>
-            Open Help Guide (PDF)
-          </button>
-          <button className="ghost" onClick={handleUploadLogs} disabled={helpActionBusy}>
-            {helpActionBusy ? "Uploading..." : "Upload Sanitized Logs"}
-          </button>
-        </div>
-        {helpMessage && <div className="muted">{helpMessage}</div>}
-        {helpError && <div className="assets-error">{helpError}</div>}
-      </section>
-
-      {runtimePanel}
-
-      <section className="panel">
-        <div className="panel-title">Policy File</div>
-        <p className="muted">
-          Enable a local policy file to override Aegis risk rules (sensitive files, command
-          patterns, env filters). Changes apply immediately if the controller is running.
-        </p>
-        <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={policyForm.enabled}
-            onChange={(event) =>
-              setPolicyForm((prev) => ({ ...prev, enabled: event.target.checked }))
-            }
-          />
-          Use policy file overrides
-        </label>
-        <div className="form-grid">
-          <label className="form-field">
-            Policy File Path
-            <input
-              type="text"
-              placeholder="C:\\Users\\<you>\\AppData\\Roaming\\Projekt Aegis\\policy.json"
-              value={policyForm.path}
-              onChange={(event) => setPolicyForm((prev) => ({ ...prev, path: event.target.value }))}
-            />
-          </label>
-        </div>
-        <div className="buttons">
-          <button className="primary" onClick={handlePolicySave} disabled={policyBusy}>
-            {policyBusy ? "Applying..." : "Apply Policy"}
-          </button>
-          <button className="ghost" onClick={handlePolicyReset} disabled={policyBusy}>
-            Reset
-          </button>
-          <button className="ghost" onClick={handleOpenPolicyFile}>
-            Open Policy File
-          </button>
-          <button className="ghost" onClick={handleOpenPolicyFolder}>
-            Open Policy Folder
-          </button>
-        </div>
-        <div className="status-grid">
-          <div>Controller: {policyStatus.controllerConnected ? "connected" : "offline"}</div>
-          <div>Policy Source: {policyStatus.usingFile ? "file" : "default"}</div>
-          <div>Last Loaded: {policyStatus.lastLoadedAt ?? "-"}</div>
-          <div>Workspace Root: {policyStatus.workspaceRoot ?? "-"}</div>
-        </div>
-        {policyError && <div className="assets-error">Policy error: {policyError}</div>}
-      </section>
-
-      <section className="panel">
-        <div className="panel-title">Alerts & Metrics</div>
-        <div className="buttons">
-          <button
-            className="ghost"
-            onClick={() =>
-              setMetricsView((prev) => (prev === "session" ? "lifetime" : "session"))
-            }
-          >
-            Viewing: {metricsView === "session" ? "Session" : "Lifetime"}
-          </button>
-          <button className="ghost" onClick={handleOpenLog}>
-            Open Log File
-          </button>
-          <button className="ghost" onClick={handleOpenLogFolder}>
-            Open Log Folder
-          </button>
-        </div>
-        <div className="status-grid">
-          <div>Green: {activeCounts.green}</div>
-          <div>Yellow: {activeCounts.yellow}</div>
-          <div>Red: {activeCounts.red}</div>
-          <div>Error: {activeCounts.error}</div>
-          <div>Log Path: {logPath}</div>
-        </div>
-        {metricsError && <div className="assets-error">Metrics error: {metricsError}</div>}
-      </section>
-
-      <section className="panel">
-        <div className="panel-title">Model & Credentials</div>
-        <p className="muted">
-          If the OpenClaw dashboard shows blank replies, it usually means the provider is rate
-          limited or out of quota. Update the API key or switch providers here.
+          If responses degrade or become blank, update provider credentials and model here.
         </p>
         {modelsError && <p className="muted">Model catalog unavailable: {modelsError}</p>}
         <div className="buttons">
           <button className="ghost" onClick={() => setShowProviderForm((prev) => !prev)}>
-            {showProviderForm ? "Close" : "Update Provider"}
+            {showProviderForm ? "Close" : "Change Provider"}
           </button>
         </div>
         {showProviderForm && (
@@ -1148,6 +1114,53 @@ export default function App() {
         )}
       </section>
 
+      <section className="panel">
+        <div className="panel-title">Help</div>
+        <p className="muted">
+          Open guidance docs or upload sanitized support logs for beta troubleshooting.
+        </p>
+        <div className="buttons">
+          <button className="ghost" onClick={handleOpenHelpGuide} disabled={helpActionBusy}>
+            Open Help Guide (PDF)
+          </button>
+          <button className="ghost" onClick={handleUploadLogs} disabled={helpActionBusy}>
+            {helpActionBusy ? "Uploading..." : "Upload Sanitized Logs"}
+          </button>
+        </div>
+        {helpMessage && <div className="muted">{helpMessage}</div>}
+        {helpError && <div className="assets-error">{helpError}</div>}
+      </section>
+
+      {runtimePanel}
+
+      <section className="panel">
+        <div className="panel-title">Alerts & Metrics</div>
+        <div className="buttons">
+          <button
+            className="ghost"
+            onClick={() =>
+              setMetricsView((prev) => (prev === "session" ? "lifetime" : "session"))
+            }
+          >
+            Viewing: {metricsView === "session" ? "Session" : "Lifetime"}
+          </button>
+          <button className="ghost" onClick={handleOpenLog}>
+            Open Log File
+          </button>
+          <button className="ghost" onClick={handleOpenLogFolder}>
+            Open Log Folder
+          </button>
+        </div>
+        <div className="status-grid">
+          <div>Green: {activeCounts.green}</div>
+          <div>Yellow: {activeCounts.yellow}</div>
+          <div>Red: {activeCounts.red}</div>
+          <div>Error: {activeCounts.error}</div>
+          <div>Log Path: {logPath}</div>
+        </div>
+        {metricsError && <div className="assets-error">Metrics error: {metricsError}</div>}
+      </section>
+
       <section className="panel assets-panel">
         <div className="panel-title">Assets</div>
         {!assets.playwright.installed && (
@@ -1193,20 +1206,84 @@ export default function App() {
         )}
       </section>
 
-      <section className="panel log-panel">
-        <div className="panel-title">Activity Log</div>
-        <div className="log">
-          {logs.length === 0 ? (
-            <div className="log-empty">Logs will appear here.</div>
-          ) : (
-            logs.map((line, idx) => (
-              <div className="log-line" key={`${line}-${idx}`}>
-                {line}
-              </div>
-            ))
-          )}
+      <section className="panel">
+        <div className="buttons">
+          <button className="ghost" onClick={() => setShowAdvancedOptions((prev) => !prev)}>
+            {showAdvancedOptions ? "Hide Advanced Options" : "Advance options"}
+          </button>
         </div>
       </section>
+
+      {showAdvancedOptions && (
+        <section className="panel">
+          <div className="panel-title">Policy File</div>
+          <p className="muted">
+            Enable a local policy file to override Aegis risk rules (sensitive files, command
+            patterns, env filters). Changes apply immediately if the controller is running.
+          </p>
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={policyForm.enabled}
+              onChange={(event) =>
+                setPolicyForm((prev) => ({ ...prev, enabled: event.target.checked }))
+              }
+            />
+            Use policy file overrides
+          </label>
+          <div className="form-grid">
+            <label className="form-field">
+              Policy File Path
+              <input
+                type="text"
+                placeholder="C:\\Users\\<you>\\AppData\\Roaming\\Projekt Aegis\\policy.json"
+                value={policyForm.path}
+                onChange={(event) =>
+                  setPolicyForm((prev) => ({ ...prev, path: event.target.value }))
+                }
+              />
+            </label>
+          </div>
+          <div className="buttons">
+            <button className="primary" onClick={handlePolicySave} disabled={policyBusy}>
+              {policyBusy ? "Applying..." : "Apply Policy"}
+            </button>
+            <button className="ghost" onClick={handlePolicyReset} disabled={policyBusy}>
+              Reset
+            </button>
+            <button className="ghost" onClick={handleOpenPolicyFile}>
+              Open Policy File
+            </button>
+            <button className="ghost" onClick={handleOpenPolicyFolder}>
+              Open Policy Folder
+            </button>
+          </div>
+          <div className="status-grid">
+            <div>Controller: {policyStatus.controllerConnected ? "connected" : "offline"}</div>
+            <div>Policy Source: {policyStatus.usingFile ? "file" : "default"}</div>
+            <div>Last Loaded: {policyStatus.lastLoadedAt ?? "-"}</div>
+            <div>Workspace Root: {policyStatus.workspaceRoot ?? "-"}</div>
+          </div>
+          {policyError && <div className="assets-error">Policy error: {policyError}</div>}
+        </section>
+      )}
+
+      {showAdvancedOptions && (
+        <section className="panel log-panel">
+          <div className="panel-title">Activity Log</div>
+          <div className="log">
+            {logs.length === 0 ? (
+              <div className="log-empty">Logs will appear here.</div>
+            ) : (
+              logs.map((line, idx) => (
+                <div className="log-line" key={`${line}-${idx}`}>
+                  {line}
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+      )}
     </div>
   );
 }

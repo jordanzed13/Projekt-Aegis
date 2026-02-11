@@ -15,6 +15,7 @@ type AegisSettings = {
   provider?: string;
   model?: string;
   communication?: "web" | "messaging";
+  autoCrashReports?: boolean;
   policyFileEnabled?: boolean;
   policyFilePath?: string;
   runtimeInstallMethod?: "git" | "npm";
@@ -28,16 +29,19 @@ type AegisSetupStatus = {
   provider?: string;
   model?: string;
   communication?: "web" | "messaging";
+  autoCrashReports?: boolean;
   dashboardUrl?: string;
 };
 
 type OnboardRequest = {
-  acceptRisk: boolean;
+  acceptRisk?: boolean;
+  acceptTerms?: boolean;
   provider: string;
   apiKey?: string;
   model?: string;
   gatewayToken?: string;
   communication?: "web" | "messaging";
+  autoCrashReports?: boolean;
 };
 
 type UpdateProviderRequest = {
@@ -110,8 +114,25 @@ let progressStatus: AegisProgressStatus = { active: false };
 let progressClearTimer: NodeJS.Timeout | null = null;
 let settings: AegisSettings = { onboardingComplete: false };
 let openclawState: OpenClawState = "offline";
+let lobsterGuardDisabledByFallback = false;
+let isAppQuitting = false;
 
 const isDev = Boolean(process.env.ELECTRON_RENDERER_URL);
+
+const resolveAppIconPath = () => {
+  const packagedCandidates = [
+    path.join(process.resourcesPath, "assets", "Logo1.jpg"),
+    path.join(process.resourcesPath, "assets", "Logo1.jpeg"),
+  ];
+  const devCandidates = [
+    path.resolve(app.getAppPath(), "../../Logo1.jpg"),
+    path.resolve(app.getAppPath(), "../../Logo1.jpeg"),
+    path.resolve(process.cwd(), "Logo1.jpg"),
+    path.resolve(process.cwd(), "Logo1.jpeg"),
+  ];
+  const candidates = app.isPackaged ? packagedCandidates : devCandidates;
+  return candidates.find((candidate) => existsSync(candidate));
+};
 
 const getRepoRoot = () => process.cwd();
 
@@ -131,6 +152,8 @@ const loadSettings = async (): Promise<AegisSettings> => {
       provider: parsed.provider,
       model: parsed.model,
       communication: parsed.communication,
+      autoCrashReports:
+        typeof parsed.autoCrashReports === "boolean" ? parsed.autoCrashReports : undefined,
       policyFileEnabled: parsed.policyFileEnabled,
       policyFilePath: parsed.policyFilePath,
       runtimeInstallMethod:
@@ -157,6 +180,9 @@ const resolveOpenClawStateDir = () => path.join(resolveAegisDataDir(), "openclaw
 const resolveWorkspaceDir = () =>
   path.join(process.env.USERPROFILE || app.getPath("home"), "Aegis_Workspace");
 const resolveAegisLogsDir = () => path.join(resolveAegisDataDir(), "logs");
+const resolveManagedExtensionsDir = () => path.join(resolveAegisDataDir(), "extensions");
+const resolveManagedExtensionPath = (extensionName: string) =>
+  path.join(resolveManagedExtensionsDir(), extensionName);
 const resolveManagedRuntimePrefix = () => path.join(resolveAegisDataDir(), "runtime", "npm-global");
 const resolveManagedOpenClawRoot = () =>
   path.join(resolveManagedRuntimePrefix(), "node_modules", "openclaw");
@@ -173,12 +199,29 @@ const formatLogTimestamp = (date = new Date()) => {
   return `${year}${month}${day}_${hours}${minutes}${seconds}`;
 };
 const buildLogFileName = (timestamp: string) => `aegis_audit_${timestamp}.jsonl`;
+const buildLegacyLogFileName = (timestamp: string) => `aegis_audit_log_${timestamp}.jsonl`;
+const LOG_FILE_PATTERN = /^((Archived_)?aegis_audit(?:_(?:\d{8}_\d{6}(?:_\d+)?)?)|(aegis_audit_log_\d{8}_\d{6}))\.jsonl$/i;
 let sessionLogPath: string | null = null;
 const ensureSessionLogFile = async () => {
   if (!sessionLogPath) {
-    sessionLogPath = path.join(resolveAegisLogsDir(), buildLogFileName(formatLogTimestamp()));
+    await fs.mkdir(resolveAegisLogsDir(), { recursive: true });
+    const entries = await fs.readdir(resolveAegisLogsDir(), { withFileTypes: true });
+    const candidates = await Promise.all(
+      entries
+        .filter((entry) => entry.isFile() && LOG_FILE_PATTERN.test(entry.name))
+        .map(async (entry) => {
+          const fullPath = path.join(resolveAegisLogsDir(), entry.name);
+          const stats = await fs.stat(fullPath);
+          return { fullPath, mtimeMs: stats.mtimeMs, name: entry.name };
+        }),
+    );
+    const latest = candidates
+      .filter((entry) => !entry.name.startsWith("Archived_"))
+      .sort((a, b) => b.mtimeMs - a.mtimeMs)[0];
+    sessionLogPath = latest
+      ? latest.fullPath
+      : path.join(resolveAegisLogsDir(), buildLogFileName(formatLogTimestamp()));
   }
-  await fs.mkdir(resolveAegisLogsDir(), { recursive: true });
   try {
     await fs.access(sessionLogPath);
   } catch {
@@ -192,6 +235,8 @@ const resolveAuthProfilesPath = (agentId = "main") =>
   path.join(resolveOpenClawStateDir(), "agents", agentId, "agent", "auth-profiles.json");
 const LOG_UPLOAD_ENDPOINT = "https://api.prophettechnology.org/v1/logs/upload";
 const LOG_UPLOAD_SECRET_NAME = "prophet-upload-api-beta.key";
+const TERMS_FILE_NAME = "TnC.txt";
+const LOGO_FILE_NAME = "Logo1.jpg";
 const REDACTED_VALUE = "******";
 
 const resolveLegacyUserDataDir = () => app.getPath("userData");
@@ -579,19 +624,55 @@ const resolveControllerEntry = async () => {
   }
 };
 
-const resolvePluginPath = () => {
-  if (isDev) {
-    return path.resolve(getRepoRoot(), "extensions", "aegis-proxy");
+const extensionHasManifest = (extensionPath: string) =>
+  existsSync(path.join(extensionPath, "openclaw.plugin.json"));
+
+const normalizeExtensionPath = (candidate: string) => candidate.trim().replace(/^"+|"+$/g, "");
+
+const resolveExtensionSourceCandidates = (extensionName: string) =>
+  isDev
+    ? [path.resolve(getRepoRoot(), "extensions", extensionName)]
+    : [
+        path.join(process.resourcesPath, "extensions", extensionName),
+        path.join(process.resourcesPath, "app.asar.unpacked", "extensions", extensionName),
+        path.resolve(getRepoRoot(), "extensions", extensionName),
+      ];
+
+const syncManagedExtension = async (extensionName: string) => {
+  const managedPath = resolveManagedExtensionPath(extensionName);
+  if (extensionHasManifest(managedPath)) {
+    return managedPath;
   }
-  return path.join(process.resourcesPath, "extensions", "aegis-proxy");
+  for (const sourcePath of resolveExtensionSourceCandidates(extensionName)) {
+    if (!extensionHasManifest(sourcePath)) {
+      continue;
+    }
+    await fs.mkdir(resolveManagedExtensionsDir(), { recursive: true });
+    await fs.cp(sourcePath, managedPath, { recursive: true, force: true });
+    if (extensionHasManifest(managedPath)) {
+      return managedPath;
+    }
+  }
+  return null;
 };
 
-const resolveLobsterGuardPluginPath = () => {
-  if (isDev) {
-    return path.resolve(getRepoRoot(), "extensions", "aegis-lobster-guard");
-  }
-  return path.join(process.resourcesPath, "extensions", "aegis-lobster-guard");
+const syncManagedAegisExtensions = async () => {
+  await syncManagedExtension("aegis-proxy");
+  await syncManagedExtension("aegis-lobster-guard");
 };
+
+const resolveExtensionPath = (extensionName: string) => {
+  const candidates = [resolveManagedExtensionPath(extensionName), ...resolveExtensionSourceCandidates(extensionName)];
+  for (const candidate of candidates) {
+    if (extensionHasManifest(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+};
+
+const resolvePluginPath = () => resolveExtensionPath("aegis-proxy");
+const resolveLobsterGuardPluginPath = () => resolveExtensionPath("aegis-lobster-guard");
 
 const resolveAssetsRoot = () => path.join(resolveAegisDataDir(), "assets");
 
@@ -1240,7 +1321,7 @@ const applyAegisOverlay = (
   modelOverride?: string,
 ) => {
   const pluginPath = resolvePluginPath();
-  const lobsterGuardPath = resolveLobsterGuardPluginPath();
+  const lobsterGuardPath = lobsterGuardDisabledByFallback ? null : resolveLobsterGuardPluginPath();
   const next: Record<string, unknown> = { ...config };
 
   const gateway = (next.gateway as Record<string, unknown> | undefined) ?? {};
@@ -1269,20 +1350,33 @@ const applyAegisOverlay = (
   const pluginPaths = new Set<string>(
     Array.isArray(pluginLoad.paths)
       ? (pluginLoad.paths as string[]).filter(
-          (entry) => !entry.toLowerCase().includes("aegis-proxy"),
+          (entry) =>
+            !entry.toLowerCase().includes("aegis-proxy") &&
+            !entry.toLowerCase().includes("aegis-lobster-guard") &&
+            extensionHasManifest(entry),
         )
       : [],
   );
-  pluginPaths.add(pluginPath);
-  pluginPaths.add(lobsterGuardPath);
+  if (pluginPath) {
+    pluginPaths.add(pluginPath);
+  }
+  if (lobsterGuardPath) {
+    pluginPaths.add(lobsterGuardPath);
+  }
   const pluginEntries = (plugins.entries as Record<string, unknown> | undefined) ?? {};
-  const nextPluginEntries: Record<string, unknown> = {
-    ...pluginEntries,
-    "aegis-proxy": { enabled: true, config: { controllerUrl } },
-    "aegis-lobster-guard": { enabled: true, config: { controllerUrl } },
-    // Enable Lobster tool (optional plugin) so we can monitor/whitelist at Gateway level.
-    lobster: { enabled: true },
-  };
+  const nextPluginEntries: Record<string, unknown> = { ...pluginEntries };
+  if (pluginPath) {
+    nextPluginEntries["aegis-proxy"] = { enabled: true, config: { controllerUrl } };
+  } else {
+    delete nextPluginEntries["aegis-proxy"];
+  }
+  if (lobsterGuardPath) {
+    nextPluginEntries["aegis-lobster-guard"] = { enabled: true, config: { controllerUrl } };
+  } else {
+    delete nextPluginEntries["aegis-lobster-guard"];
+  }
+  // Enable Lobster tool (optional plugin) so we can monitor/whitelist at Gateway level.
+  nextPluginEntries.lobster = { enabled: true };
   for (const pluginId of listBundledChannelPluginIds()) {
     const existing = nextPluginEntries[pluginId];
     if (existing && typeof existing === "object") {
@@ -1364,8 +1458,44 @@ const writeOpenClawConfig = async (
 ) => {
   const baseConfig = await loadOpenClawConfig(configPath);
   const nextConfig = applyAegisOverlay(baseConfig, controllerUrl, modelOverride);
+  const plugins = (nextConfig.plugins as Record<string, unknown> | undefined) ?? {};
+  const pluginLoad = (plugins.load as Record<string, unknown> | undefined) ?? {};
+  const normalizedPaths = Array.isArray(pluginLoad.paths)
+    ? (pluginLoad.paths as unknown[])
+        .filter((entry): entry is string => typeof entry === "string")
+        .map((entry) => normalizeExtensionPath(entry))
+        .filter((entry) => entry.length > 0 && extensionHasManifest(entry))
+    : [];
+  const pluginEntries = (plugins.entries as Record<string, unknown> | undefined) ?? {};
+  const hasAegisProxy = normalizedPaths.some((entry) => entry.toLowerCase().includes("aegis-proxy"));
+  const hasAegisLobsterGuard = normalizedPaths.some((entry) =>
+    entry.toLowerCase().includes("aegis-lobster-guard"),
+  );
+  const nextEntries: Record<string, unknown> = { ...pluginEntries };
+  if (!hasAegisProxy) {
+    delete nextEntries["aegis-proxy"];
+  }
+  if (!hasAegisLobsterGuard) {
+    delete nextEntries["aegis-lobster-guard"];
+  }
+  nextConfig.plugins = {
+    ...plugins,
+    load: {
+      ...pluginLoad,
+      paths: normalizedPaths,
+    },
+    entries: nextEntries,
+  };
   await fs.writeFile(configPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
   return nextConfig;
+};
+
+const shouldDisableLobsterGuardForLine = (line: string) => {
+  const normalized = line.toLowerCase();
+  return (
+    normalized.includes("aegis-lobster-guard") &&
+    (normalized.includes("plugin manifest not found") || normalized.includes("plugin not found"))
+  );
 };
 
 const startOpenClaw = async () => {
@@ -1384,6 +1514,7 @@ const startOpenClaw = async () => {
   const configPath = resolveOpenClawConfigPath();
   const controllerUrl = `http://127.0.0.1:${controllerPort}`;
   await fs.mkdir(stateDir, { recursive: true });
+  await syncManagedAegisExtensions();
   await writeOpenClawConfig(configPath, controllerUrl);
 
   const launch = await resolveOpenClawLaunch();
@@ -1418,6 +1549,7 @@ const startOpenClaw = async () => {
       env: baseEnv,
     });
   }
+  let missingLobsterGuardManifest = false;
   setOpenclawState("starting");
   emitStatus();
 
@@ -1428,13 +1560,32 @@ const startOpenClaw = async () => {
     setOpenclawState("offline");
     emitStatus();
   });
-  openclawProcess.stdout.on("data", (data) => emitLog(`[openclaw] ${data.toString()}`));
-  openclawProcess.stderr.on("data", (data) => emitLog(`[openclaw] ${data.toString()}`));
+  openclawProcess.stdout.on("data", (data) => {
+    const text = data.toString();
+    if (shouldDisableLobsterGuardForLine(text)) {
+      missingLobsterGuardManifest = true;
+    }
+    emitLog(`[openclaw] ${text}`);
+  });
+  openclawProcess.stderr.on("data", (data) => {
+    const text = data.toString();
+    if (shouldDisableLobsterGuardForLine(text)) {
+      missingLobsterGuardManifest = true;
+    }
+    emitLog(`[openclaw] ${text}`);
+  });
   openclawProcess.on("exit", (code, signal) => {
     emitLog(`[openclaw] process exited (code ${code ?? "null"}, signal ${signal ?? "none"})`);
     openclawProcess = null;
     setOpenclawState("offline");
     emitStatus();
+    if (!lobsterGuardDisabledByFallback && missingLobsterGuardManifest) {
+      lobsterGuardDisabledByFallback = true;
+      emitLog(
+        "[openclaw] Missing aegis-lobster-guard plugin manifest detected. Disabling lobster guard plugin for this install and retrying launch.",
+      );
+      void startOpenClaw();
+    }
   });
 };
 
@@ -1482,13 +1633,15 @@ const startController = async () => {
   emitStatus();
 };
 
-const stopProcesses = () => {
+const stopProcesses = (options?: { emit?: boolean }) => {
   controllerProcess?.kill();
   openclawProcess?.kill();
   controllerProcess = null;
   openclawProcess = null;
   openclawState = "offline";
-  emitStatus();
+  if (options?.emit !== false) {
+    emitStatus();
+  }
 };
 
 const getStatus = () => {
@@ -1503,14 +1656,21 @@ const getStatus = () => {
 };
 
 function safeSend(channel: string, ...args: unknown[]) {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return;
+  try {
+    if (isAppQuitting) {
+      return;
+    }
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+    const wc = mainWindow.webContents;
+    if (!wc || wc.isDestroyed()) {
+      return;
+    }
+    wc.send(channel, ...args);
+  } catch {
+    // Window teardown race: ignore post-destroy sends.
   }
-  const wc = mainWindow.webContents;
-  if (!wc || wc.isDestroyed()) {
-    return;
-  }
-  wc.send(channel, ...args);
 }
 
 const emitStatus = () => {
@@ -1565,6 +1725,7 @@ const getSetupStatus = async (): Promise<AegisSetupStatus> => {
     provider: settings.provider,
     model: settings.model,
     communication: settings.communication,
+    autoCrashReports: settings.autoCrashReports,
     dashboardUrl: getDashboardUrl(),
   };
 };
@@ -1729,6 +1890,10 @@ const runOpenClawOnboard = async (payload: OnboardRequest) => {
     provider: provider === "skip" ? undefined : provider,
     model: model || undefined,
     communication: payload.communication ?? "web",
+    autoCrashReports:
+      typeof payload.autoCrashReports === "boolean"
+        ? payload.autoCrashReports
+        : (settings.autoCrashReports ?? true),
   });
 
   completeProgressStatus("onboard", "Onboarding completed.");
@@ -1815,22 +1980,23 @@ const updateProviderAndModel = async (payload: UpdateProviderRequest) => {
   });
 
   stopProcesses();
-  await startOpenClaw();
   await startController();
+  await startOpenClaw();
   return { ok: true, setup: await getSetupStatus() };
 };
 
 const runOnboarding = async (payload: OnboardRequest) => {
-  if (!payload.acceptRisk) {
-    return { ok: false, error: "Acknowledgement required before onboarding." };
+  const acceptedTerms = payload.acceptTerms ?? payload.acceptRisk ?? false;
+  if (!acceptedTerms) {
+    return { ok: false, error: "Terms acceptance required before onboarding." };
   }
   stopProcesses();
   const result = await runOpenClawOnboard(payload);
   if (!result.ok) {
     return result;
   }
-  await startOpenClaw();
   await startController();
+  await startOpenClaw();
   return { ok: true, status: getStatus(), setup: await getSetupStatus() };
 };
 
@@ -1957,6 +2123,21 @@ const resolveActiveLogPath = async () => {
   return ensureSessionLogFile();
 };
 
+const listRecentLogPaths = async (limit = 10) => {
+  await fs.mkdir(resolveAegisLogsDir(), { recursive: true });
+  const entries = await fs.readdir(resolveAegisLogsDir(), { withFileTypes: true });
+  const candidates = await Promise.all(
+    entries
+      .filter((entry) => entry.isFile() && LOG_FILE_PATTERN.test(entry.name))
+      .map(async (entry) => {
+        const fullPath = path.join(resolveAegisLogsDir(), entry.name);
+        const stats = await fs.stat(fullPath);
+        return { fullPath, mtimeMs: stats.mtimeMs };
+      }),
+  );
+  return candidates.sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, limit).map((entry) => entry.fullPath);
+};
+
 const resolveHelpGuidePath = () => {
   const candidates = [
     path.resolve(getRepoRoot(), "src", "guides", "Help.pdf"),
@@ -1982,6 +2163,49 @@ const openHelpGuide = async () => {
     throw new Error(result);
   }
   return { path: helpPath };
+};
+
+const resolveTermsPath = () => {
+  const candidates = [
+    path.resolve(getRepoRoot(), TERMS_FILE_NAME),
+    path.join(process.resourcesPath, "docs", TERMS_FILE_NAME),
+    path.join(process.resourcesPath, TERMS_FILE_NAME),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+};
+
+const getTermsAndConditions = async () => {
+  const termsPath = resolveTermsPath();
+  if (!termsPath) {
+    return { ok: false, error: "Terms file not found." };
+  }
+  try {
+    const content = await fs.readFile(termsPath, "utf8");
+    return { ok: true, path: termsPath, content };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: message };
+  }
+};
+
+const resolveLogoPath = () => {
+  const candidates = [
+    path.resolve(getRepoRoot(), LOGO_FILE_NAME),
+    path.resolve(getRepoRoot(), "Logo1.jpeg"),
+    path.join(process.resourcesPath, "assets", LOGO_FILE_NAME),
+    path.join(process.resourcesPath, "assets", "Logo1.jpeg"),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
 };
 
 const resolveUploadSecretPath = () => {
@@ -2054,10 +2278,18 @@ const sanitizeLogLineForUpload = (line: string) => {
   }
 };
 
-const createSanitizedLogFile = async (sourcePath: string) => {
-  const raw = await fs.readFile(sourcePath, "utf8");
-  const lines = raw.split(/\r?\n/);
-  const sanitizedLines = lines.map((line) => sanitizeLogLineForUpload(line)).filter(Boolean);
+const createSanitizedLogFile = async (sourcePaths: string[]) => {
+  const sanitizedLines: string[] = [];
+  for (const sourcePath of sourcePaths) {
+    const raw = await fs.readFile(sourcePath, "utf8");
+    const lines = raw.split(/\r?\n/);
+    for (const line of lines) {
+      const sanitized = sanitizeLogLineForUpload(line);
+      if (sanitized) {
+        sanitizedLines.push(sanitized);
+      }
+    }
+  }
   const tmpDir = path.join(os.tmpdir(), "projekt-aegis");
   await fs.mkdir(tmpDir, { recursive: true });
   const outputPath = path.join(tmpDir, `sanitized_aegis_log_${formatLogTimestamp()}.jsonl`);
@@ -2066,8 +2298,8 @@ const createSanitizedLogFile = async (sourcePath: string) => {
 };
 
 const uploadSanitizedLogs = async () => {
-  const sourcePath = await resolveActiveLogPath();
-  if (!existsSync(sourcePath)) {
+  const sourcePaths = await listRecentLogPaths(10);
+  if (sourcePaths.length === 0) {
     return { ok: false, message: "No log file available to upload." };
   }
   const secretPath = resolveUploadSecretPath();
@@ -2085,7 +2317,7 @@ const uploadSanitizedLogs = async () => {
     };
   }
 
-  const sanitizedPath = await createSanitizedLogFile(sourcePath);
+  const sanitizedPath = await createSanitizedLogFile(sourcePaths);
   const sanitizedBody = await fs.readFile(sanitizedPath);
   const form = new FormData();
   form.set(
@@ -2111,10 +2343,12 @@ const uploadSanitizedLogs = async () => {
       message: `Upload failed (${response.status})${suffix}`,
     };
   }
-  emitLog(`[upload] Sanitized log uploaded successfully (${path.basename(sanitizedPath)}).`);
+  emitLog(
+    `[upload] Sanitized logs uploaded successfully (${path.basename(sanitizedPath)}, ${sourcePaths.length} files).`,
+  );
   return {
     ok: true,
-    message: "Sanitized log uploaded successfully.",
+    message: `Sanitized logs uploaded successfully (${sourcePaths.length} recent files).`,
     uploadedAt: new Date().toISOString(),
   };
 };
@@ -2147,9 +2381,11 @@ const openPolicyFolder = async () => {
 };
 
 const createWindow = () => {
+  const appIconPath = resolveAppIconPath();
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
+    icon: appIconPath,
     webPreferences: {
       preload: resolvePreloadPath(),
       contextIsolation: true,
@@ -2162,6 +2398,9 @@ const createWindow = () => {
   } else {
     mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
   }
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
 };
 
 app.whenReady().then(async () => {
@@ -2183,8 +2422,8 @@ app.whenReady().then(async () => {
   }
 
   ipcMain.handle("aegis:start", async () => {
-    await startOpenClaw();
     await startController();
+    await startOpenClaw();
     return getStatus();
   });
 
@@ -2213,6 +2452,8 @@ app.whenReady().then(async () => {
   ipcMain.handle("aegis:log-open", async () => openAuditLog());
   ipcMain.handle("aegis:log-open-folder", async () => openAuditLogFolder());
   ipcMain.handle("aegis:help-open", async () => openHelpGuide());
+  ipcMain.handle("aegis:terms:get", async () => getTermsAndConditions());
+  ipcMain.handle("aegis:logo-path", async () => ({ path: resolveLogoPath() }));
   ipcMain.handle("aegis:log-upload", async () => uploadSanitizedLogs());
   ipcMain.handle("aegis:policy:get", async () => fetchPolicyStatus());
   ipcMain.handle("aegis:policy:set", async (_event, payload: PolicySettings) =>
@@ -2235,7 +2476,12 @@ app.whenReady().then(async () => {
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
-    stopProcesses();
+    isAppQuitting = true;
+    stopProcesses({ emit: false });
     app.quit();
   }
+});
+
+app.on("before-quit", () => {
+  isAppQuitting = true;
 });

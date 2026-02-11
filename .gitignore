@@ -6,6 +6,8 @@ dist/
 **/dist/
 out/
 **/out/
+build/
+**/build/
 apps/aegis-desktop/dist/
 apps/aegis-controller/dist/
 packages/aegis-core/dist/

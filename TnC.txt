@@ -1,0 +1,81 @@
+PROJEKT AEGIS - BETA USER AGREEMENT
+
+Version: 0.8 (Public Beta)
+Last Updated: February 11, 2026
+
+IMPORTANT: PLEASE READ CAREFULLY.
+By clicking "I Agree" or installing Projekt Aegis ("The Software"), you agree to be bound by these terms. If you do not agree, do not install the software.
+PLAIN ENGLISH SUMMARY (TL;DR)
+
+    This is a Beta: The software may have bugs, crash, or fail to block certain threats. Do not use it on mission-critical systems.
+
+    You are in Control: Aegis provides guardrails, but you are ultimately responsible for any action you approve the Agent to perform.
+
+    Your Data: Logs are stored locally on your machine. We do not see them unless you explicitly choose to upload them for analysis.
+
+    No Warranty: We provide this tool "As Is." We are not liable if an AI Agent damages your computer or loses your data.
+
+1. THE BETA LICENSE
+
+We grant you a personal, non-exclusive, non-transferable, revocable license to use Projekt Aegis for testing and evaluation purposes.
+
+    Beta Nature: You acknowledge that the Software is in a development state. It may contain errors, design flaws, or other problems that could cause system or data loss.
+
+    No Critical Use: You agree not to use this Beta version in environments where a software failure could lead to death, injury, or significant financial loss (e.g., nuclear facilities, life support, critical banking infrastructure).
+
+2. SECURITY SANDBOX DISCLAIMER
+
+Projekt Aegis is a risk mitigation tool, not a guarantee of safety.
+
+    Not an Antivirus: Aegis inspects specific "Tool Calls" made by AI Agents. It does not replace traditional Antivirus or Firewall software.
+
+    Bypass Possibility: We strive to block malicious activity (e.g., "Red Lines"), but sophisticated agents or novel attack vectors ("Zero Days") may bypass our detection.
+
+    User Override: If Aegis flags an action as "RED" (High Risk) and you explicitly click "ALLOW," you assume 100% responsibility for the outcome of that action.
+
+3. DATA PRIVACY & LOGGING
+
+We take your privacy seriously. Here is how your data is handled:
+
+    Local Storage: By default, all Agent Activity Logs ("Audit Trails") are stored locally on your device in the %AppData%/Aegis/Logs folder. We cannot access these files remotely.
+
+    Voluntary Uploads: The Software includes a "Send Logs" feature to help us improve security.
+
+        Consent: Logs are only transmitted if you click "Send" or enable "Automatic Crash Reporting" during setup.
+
+        Sanitization: While we attempt to automatically redact sensitive info (like API Keys or PII) before upload, we cannot guarantee perfect redaction.
+
+        User Responsibility: You agree to review logs before uploading them. Do not upload logs that contain highly sensitive secrets (e.g., unencrypted private keys, medical data).
+
+    Usage of Uploaded Data: By uploading logs, you grant us permission to use the anonymized data to improve our threat detection models (e.g., training "Aegis Brain").
+
+4. LIMITATION OF LIABILITY (The "Don't Sue Us" Clause)
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE CREATORS OF PROJEKT AEGIS SHALL NOT BE LIABLE FOR:
+
+    Damage: Any damages arising from the use or inability to use the Software (including hardware damage, data loss, or business interruption).
+
+    Agent Actions: Any harm caused by third-party AI Agents (e.g., OpenClaw, AutoGPT) running within or alongside the Sandbox.
+
+    Failure to Block: Any security breach that occurs despite the presence of the Software.
+
+TOTAL LIABILITY: In no event shall our total liability to you exceed the amount you paid for the Software (which is $0.00 for this Beta).
+5. USER RESPONSIBILITIES
+
+You agree NOT to:
+
+    Use Aegis to develop, test, or deploy malware or malicious AI agents intended to harm others.
+
+    Reverse engineer or decompile the Aegis source code (except where allowed by open-source licenses).
+
+    Upload logs containing illegal content or content you do not own.
+
+6. UPDATES & TERMINATION
+
+    Updates: We may push automatic updates to fix security vulnerabilities. You agree to receive these updates.
+
+    Termination: We reserve the right to terminate your access to the Beta at any time, for any reason, without notice.
+
+7. GOVERNING LAW
+
+These terms shall be governed by the laws of [Your Country/State], without regard to its conflict of law provisions.
